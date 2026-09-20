@@ -23,31 +23,34 @@ Numbered SQL migrations for all eleven tables, the migration runner, repository 
 `storage/unit_of_work.py` — the mechanism making state mutation and audit event commit together
 (ADR-0004). Integration tests against real Postgres, including the forced-failure atomicity cases and
 the rule that no transaction spans a model call.
-*Satisfies: O.1/13.*
+*Satisfies: O.1/21.*
 
 ### Step 3. Identity
 `manifest.yaml` plus `core.md`, `behaviour.md`, `relationship.md`, extracted from the behaviour
 contract. Deterministic composition, hashing over composed text, snapshot into `identity_version`.
-*Satisfies: O.1/18.*
+*Satisfies: O.1/26.*
 
 ### Step 4. Context bundle, rules, escaping, estimator
-`ContextBundle`/`ContextBlock` types with trust tier and taint. `context/escaping.py` implementing
-the §B.4 encode/decode with deliberate-collision and round-trip tests. `CONTEXT_RULES` including the
-escaping legend. `conservative-v1` estimator. Budget allocator with floors, caps and drop reasons.
-Manifest emission. Determinism tests. Compiler produces the `reply` block set without memory, and the
-`memory_proposal` block set.
-*Satisfies: O.1/15.*
+`ContextBundle`/`ContextBlock` types with trust tier, **region** and taint. `context/escaping.py`
+implementing the §B.4 encode/decode with deliberate-collision and round-trip tests. `CONTEXT_RULES`
+including the escaping legend. `conservative-v1` estimator. Budget allocator with floors, caps and
+drop reasons. Manifest emission. Determinism tests. History filtered to exclude `system_note`.
+Compiler produces the `reply` block set without memory, and the `memory_proposal` block set.
+*Satisfies: O.1/6, O.1/26.*
 
 ### Step 5. Brain abstraction and `brain.fake`
 `Brain` protocol with `adapter_key` and `render_version`, `ModelCapabilities`, `TokenEstimator`,
-registry and alias resolution. `brain.fake` in `echo` and `scripted` modes.
+registry and alias resolution, and the **four-region render contract** (§G.3) with its Gate 1 tests.
+`brain.fake` in `echo` and `scripted` modes.
+*Satisfies: O.1/5, O.1/23.*
 
 ### Step 6. Turn orchestration and invocations — **first end-to-end turn**
 Conversations, messages with `seq` and idempotency, the turn lifecycle with the §A.2 transaction
-boundaries, `core/invocations.py` as the only place an adapter is invoked, orphan recovery,
-`system_note` handling, and `cli/chat.py`. Apollo holds a conversation against `brain.fake` with a
-complete turn record, invocation record and manifest for every exchange.
-*Satisfies: O.1/1, O.1/7 (reply invocation).*
+boundaries, `core/invocations.py` as the only place an adapter is invoked — including
+**retry-as-new-invocation** with `retry_of_invocation_id` — orphan recovery, `system_note` handling,
+and `cli/chat.py`. Apollo holds a conversation against `brain.fake` with a complete turn record,
+invocation record and manifest for every exchange.
+*Satisfies: O.1/1, O.1/12 (reply invocation), O.1/13.*
 
 > **M1:** a talking loop with full auditability and no intelligence. Everything after adds depth to a
 > system that already works end to end.
@@ -61,21 +64,21 @@ complete turn record, invocation record and manifest for every exchange.
 pre-retrieval check, refusal paths, `policy.refused` audit. The interactive API restricted to
 `personal` conversations.
 **Before any hosted model is configured**, so the control exists before the thing it controls.
-*Satisfies: O.1/12 (first two mechanisms).*
+*Satisfies: O.1/20 (first two mechanisms).*
 
 ### Step 8. OpenAI-compatible adapter
 Rendering with system-role rules and fence escaping applied, `render_version` declaration,
 generation, capability reporting, reasoning-channel discard, `finish_reason` and token-count
 handling, and the §H.5 sanitisation whitelist. Gate 1 harness. Bind `brain.reference` (eval-only) and
 `brain.local` against llama.cpp when available.
-*Satisfies: O.1/14.*
+*Satisfies: O.1/22.*
 
 ### Step 9. Persona suite
 Runner using the same invocation-recording path, the nine check types, YAML case format, run records
 storing responses verbatim, and `evals diff`. Initial corpus: one case per behavioural rule plus the
 sixteen probes in the contract's §11. First runs against `fake` and `reference`; recordings captured
 for `brain.fake` replay.
-*Satisfies: O.1/6, O.1/21.*
+*Satisfies: O.1/3, O.1/4, O.1/11, O.1/29.*
 
 > **M2:** behaviour is measurable and comparable across brains before memory complicates the picture.
 > Persona failures here are persona failures, not retrieval bugs.
@@ -89,7 +92,9 @@ The lifecycle: create, confirm, contradict, correct/supersede, archive, restore,
 support and confidence. Direct-entry API and `cli/memory.py`. Invariant tests — single active per
 chain, provenance required, `origin_tier` never mutated, tombstone completeness including the
 sentinel sweep across every table and log sink.
-*Satisfies: O.1/10, O.1/11.*
+Tombstone implements the full transaction: content, excerpts, derived copies, **verification-hash
+redaction across affected invocations**, and the audit event.
+*Satisfies: O.1/17, O.1/18, O.1/19.*
 
 ### Step 11. Retrieval and its eval
 Strategies (pinned, lexical, recency), merge and ranking, `origin`/mode scoping, and the
@@ -97,13 +102,14 @@ Strategies (pinned, lexical, recency), merge and ranking, `origin`/mode scoping,
 `correct_empty_rate`. `MEMORY` and `RETRIEVAL_NOTICE` blocks wired into the compiler.
 **Run the suite under both `english` and `simple` text-search configurations and keep the better one,
 recording the result** (§E.4).
-*Satisfies: O.1/2, O.1/3, O.1/4, O.1/12 (third mechanism), O.1/16.*
+*Satisfies: O.1/2, O.1/7, O.1/8, O.1/20 (third mechanism), O.1/24.*
 
 ### Step 12. Memory proposals
 Deterministic intent detection, the `memory_proposal` invocation with its minimal bundle, proposal
-creation, the Save / Edit and Save / Ignore surface, expiry, and the invariants — proposals never
-retrieved, no code path from generation to memory creation, `self` scope rejected.
-*Satisfies: O.1/7 (both invocations), O.1/8, O.1/9.*
+creation, the Save / Edit and Save / Ignore surface, expiry, **clearing proposal text on resolution**
+with its check constraint, and the invariants — proposals never retrieved, no code path from
+generation to memory creation, `self` scope rejected.
+*Satisfies: O.1/12 (both invocations), O.1/14, O.1/15, O.1/16.*
 
 > **M3:** Apollo remembers what he was asked to remember, retrieval is measured, and absence is
 > reported honestly.
@@ -115,22 +121,22 @@ retrieved, no code path from generation to memory creation, `self` scope rejecte
 ### Step 13. Replay
 `core/replay.py` and `apollo turn replay <id>`: rebuild from manifest and source rows, verify the
 bundle hash, re-render by `adapter_key` + `render_version`, verify the rendered prompt hash. Both
-status axes, including `SOURCE_REDACTED` against a tombstoned source and `RENDERER_UNAVAILABLE`
-against a retired render version.
-*Satisfies: O.1/5.*
+status axes, including `SOURCE_REDACTED` against a tombstoned source, `RENDERER_UNAVAILABLE` against
+a retired render version, and replay of a *failed* invocation.
+*Satisfies: O.1/9, O.1/10.*
 
 ### Step 14. Failure behaviour and redaction
 Every row of spec §L implemented and tested: unavailable brain, single same-brain retry, mode and
 eval-only refusals, database loss, retrieval failure vs. emptiness, empty and truncated generations,
 context overflow, proposal-structuring failure not failing the turn, crash recovery, idempotent
 resubmission. The sentinel log-redaction test and the simulated-provider-error sanitisation test.
-*Satisfies: O.1/17, O.1/19.*
+*Satisfies: O.1/25, O.1/27.*
 
 ### Step 15. Backup and restore
 `pg_dump` procedure, documented restore, and **one executed restore into a scratch database with the
 result verified** — with the dump either confined to encrypted storage and destroyed or encrypted
 before retention. Retention window configured.
-*Satisfies: O.1/22.*
+*Satisfies: O.1/30.*
 
 > **M4:** every technical acceptance criterion in §O.1 passes.
 
@@ -158,6 +164,8 @@ supporting evidence.
   that was absent for a while.
 - **Escaping ships with the bundle** (step 4), not with the adapter. A fence without escaping is a
   fence that does not hold.
+- **The region contract ships with the brain protocol** (step 5), before any real adapter exists, so
+  the first adapter is written against it rather than retrofitted to it.
 - **Policy precedes the hosted adapter** (step 7 before 8). A privacy control added after the thing
   it controls is a control that was absent for a while.
 - **Persona measurement precedes memory** (step 9 before 10), so the first persona failures are

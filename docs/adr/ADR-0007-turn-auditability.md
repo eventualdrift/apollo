@@ -24,8 +24,22 @@ types, tiers, token counts, source references and drop reasons — plus `identit
 Replay re-renders deterministically from the manifest and the source rows and compares hashes.
 
 **The manifest carries references and metadata, never content and never per-block content digests.**
-The only digest over block content is the whole-bundle hash, which covers everything combined and is
-therefore not a useful handle on any single short claim.
+
+The earlier revision then claimed the whole-bundle hash was "not a useful handle on any single short
+claim". That was too strong. Given the rest of a bundle and a low-entropy deleted value — a short
+code, a small number, a yes/no fact, a predictable name — a deterministic digest works as a
+guess-verification oracle.
+
+So **tombstone redacts it** (Option B of the three considered). In the tombstone transaction, every
+invocation whose manifest included that memory has `context_bundle_hash` and `rendered_prompt_hash`
+nulled, with a recorded redaction reason and a count in the audit payload. Only `included = true`
+entries qualify: a dropped block's content never entered the bundle, so no oracle exists.
+
+Nothing is lost that was not already lost — those invocations return `SOURCE_REDACTED` regardless, so
+their verification hashes had no remaining use, which is exactly why redacting them is cheap. Keyed
+digests were rejected for phase zero as a key-management subsystem in disguise, and remain the named
+fallback if redaction proves insufficient. **Identity hashing is untouched**: identity is neither
+private nor deletable, and its hash is what makes historical reconstruction possible at all.
 
 **Deletion wins over replay.** Apollo does not retain deleted plaintext so reconstruction stays
 possible. Fake deletion would be worse than an honest gap.
@@ -47,6 +61,20 @@ The guarantee, stated precisely:
 Archive and supersession preserve content and therefore preserve replay. Only tombstone — and, later,
 message deletion under the same principle — produces `SOURCE_REDACTED`. This works because *claim
 content* and *message content* are write-once (ADR-0005), not because rows are wholly immutable.
+
+**Reconstruction never substitutes a source.** A `MEMORY` block is rebuilt only from the `memory` row
+the manifest names. If that row is tombstoned, replay stops; it does not fall back to a source
+message, an observation excerpt or any other text that happens to say something similar. Re-deriving
+a deleted claim from elsewhere would defeat the deletion it is reporting.
+
+**Replay is per invocation**, and a *failed* invocation is still replayable — its bundle was built
+before the call, so what the failed attempt would have sent is reconstructable even without output.
+That is what makes a retry pair diagnosable.
+
+**What tombstoning does not reach:** the original conversational message. Message deletion is out of
+phase-zero scope, so a fact stated in conversation survives in the transcript even after Apollo has
+been told to forget it as a memory. This is a deliberate boundary and is documented as such rather
+than papered over.
 
 **No hidden reasoning traces are persisted in any stream.** Adapters discard them, recording only
 `reasoning_tokens`. It is the model's scratch space; it frequently contains content the visible

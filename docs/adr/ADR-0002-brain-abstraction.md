@@ -22,6 +22,13 @@ Three responsibilities belong to the adapter, not to Core:
 1. **Rendering.** The compiler emits a typed `ContextBundle`; the adapter renders it into that
    model's wire format, including applying the fence escaping of ADR-0006. If Core rendered, every
    wire-format difference would be a Core change.
+
+   The adapter is bound by a **four-region contract**: `policy` blocks go to the highest-authority
+   instruction region the provider offers; `history` keeps conversational roles; `data` is fenced,
+   escaped and never authoritative; `request` is the current user message, verbatim and unfenced, as
+   the final user turn. An adapter without system/user/assistant roles must preserve the same
+   distinction in whatever template it uses. No `data` block may reach the policy region or be
+   rendered as the request — Gate 1 tests this, including with deliberate delimiter collisions.
 2. **Token counting.** Adapters supply a `TokenEstimator` through `ModelCapabilities`. Core owns
    budget *policy* — priority, reservation, what is dropped — and asks the adapter for counts. Core
    is never taught a model family's tokenisation rules. A documented conservative fallback

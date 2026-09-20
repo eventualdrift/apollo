@@ -24,7 +24,8 @@ Two entities with distinct meanings:
   `context_manifest` and `context_bundle_hash`, trust tier and taint, generation parameters,
   rendered prompt hash, token counts, finish reason, timing, status and sanitised error fields.
 
-A turn has zero or more invocations, ordered by `seq`.
+A turn has zero or more invocations, ordered by `seq`. An ordinary turn has one; a turn with
+persistence intent has two; a turn whose reply needed a transport retry has one more.
 
 **Each invocation carries its own compiled bundle.** The reply bundle is the full Apollo context; the
 proposal bundle is a minimal structuring context with no identity and no memory blocks, so existing
@@ -38,6 +39,16 @@ to invoke one without an `invocation_id` for a row already committed with `statu
 (ADR-0004). The eval runner uses the same path, so eval calls are recorded exactly like interactive
 ones. `memory_proposal` rows record which invocation produced them.
 
+**A retry is another invocation.** The precise invariant is that *every actual provider generation
+attempt corresponds to exactly one committed row*. The automatic transport-level retry permitted by
+ADR-0009 therefore creates a new row with the next `seq` and `retry_of_invocation_id` pointing at the
+attempt it replaces; the failed row keeps its own error fields and its own bundle. A second call
+inside one row would reintroduce exactly the hidden inference this record exists to prevent.
+
+`retry_of_invocation_id` alone suffices — attempt number is the chain length, and phase zero permits
+at most one retry per purpose, so a chain is at most two rows. A separate `attempt` counter would be
+derivable and therefore redundant.
+
 Identity remains denormalised on `turn` as the single exception: it is true of the turn as a whole,
 persona evaluation keys on it, and "every turn under identity X" should not require a join.
 
@@ -45,7 +56,8 @@ persona evaluation keys on it, and "every turn under identity X" should not requ
 
 - Every model call is auditable, replayable and attributable, including secondary ones.
 - Replay operates per invocation, which is the correct granularity — the two calls in a turn have
-  different bundles and may have different render versions.
+  different bundles and may have different render versions, and a failed attempt's bundle is
+  reconstructable even though it produced no output.
 - Token cost and latency per purpose become visible, which will matter when deciding whether proposal
   structuring is worth its cost.
 - Slightly more schema than a single-call design, paid once, before any code exists.

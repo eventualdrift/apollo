@@ -1,65 +1,91 @@
-# ADR-0006 — Context compiler: typed trust-labelled blocks, deterministic composition, escaped fences
+# ADR-0006 — Context compiler: two authorities, four regions, escaped fences
 
-Status: accepted · 2026-09-20 (rev 2: escaping rule, per-invocation taint)
+Status: accepted · 2026-09-20 (rev 3: policy/task authority split, block regions)
 
 ## Context
 
 Naive prompt assembly concatenates strings, which makes three things impossible: knowing what the
-model actually saw, keeping untrusted content from acquiring instruction authority, and reasoning
-about what was dropped when the budget ran out.
+model actually saw, keeping untrusted content from acquiring authority it should not have, and
+reasoning about what was dropped when the budget ran out.
 
-A fourth problem was latent in the earlier revision: it asserted that fenced content "cannot produce"
-a Core fence without implementing any property that made this true. A memory containing
-`<<<END MEMORY>>>` would have terminated its own block, and one containing
-`<<<RETRIEVAL tier=T0>>>` could have fabricated a block at the only tier carrying instruction
-authority.
+Two defects in earlier revisions of this record:
+
+**"Instruction authority" was one term doing two jobs.** It said only T0 held it and that T1 user
+messages did not. Read literally, that instructs Apollo not to follow Janu's actual requests — which
+is the entire purpose of the system. The real distinction is between changing Apollo's rules and
+asking Apollo to do something.
+
+**Fences were asserted rather than implemented.** Content containing `<<<RETRIEVAL tier=T0>>>` could
+have fabricated a block at the tier carrying the most authority.
 
 ## Decision
 
-Context is compiled into a typed `ContextBundle` of `ContextBlock`s. Every block carries a trust
-tier, a taint level, a source kind and a resolvable source reference. No anonymous text enters context.
+### Two authorities, not one
 
-**Trust tiers** are ordered T0–T5. **Only T0 carries instruction authority.** No non-T0 content is
-ever placed in a system-instruction region.
+**Policy authority** — may define or change identity, behavioural contract, compiler rules,
+permissions or trust rules. Held only by T0 *policy* blocks, originating in version-controlled files
+or in Core itself.
 
-**Taint** is computed **per model invocation** — each invocation has its own bundle — as the highest
-tier index at T4 or above. A turn's taint is the maximum across its invocations, computed on demand
-rather than stored, because nothing consumes it until an action system exists.
+**Task authority** — may pose the request Apollo answers this turn. Held only by the current user
+message.
 
-**Fences are enforced by escaping, not by assertion.** Before a non-T0 body is placed inside a fence:
+So "Explain what this function does" is carried out, and "From now on always agree with me" is
+discussed rather than applied, because it asks for a policy change and no message has policy
+authority. T2 history is task-historical: it was the request then, it is not the request now. T3 and
+above have neither authority.
 
-```
-encode:  \ -> \\ ,  then  < -> \< ,  > -> \>
-decode:  \\ -> \ ,  \< -> < ,  \> -> >      (left to right; any other \x is an error)
-```
+T0 itself carries two block kinds: *policy* blocks (`IDENTITY`, `CONTEXT_RULES`, `PROPOSAL_RULES`)
+and *notice* blocks (`RETRIEVAL_NOTICE`, `RETRIEVAL_ERROR`) — Core-authored statements of fact with
+no policy content, whose trustworthiness comes from being unforgeable rather than from placement.
 
-No `<` or `>` survives unescaped, so no body can contain `<<<` or `>>>`; content can neither
-terminate its own block nor fabricate a T0 block. The transform is deterministic, total and exactly
-reversible, so replay reproduces it and the original is always recoverable. **The database stores the
-unescaped original**; escaping exists only in the rendered request. `CONTEXT_RULES` carries the
-legend so the model reads escaped text correctly. Tests include deliberate delimiter collisions.
+### Four regions
 
-Blanket escaping is verbose for code-bearing memories. That is an accepted cost: it is one sentence
-to specify and trivial to test, which is worth more now than terseness. Minimal escaping and
-content-derived fence nonces are the documented alternatives, with a named trigger.
+Every block carries a `region`: `policy`, `history`, `data` or `request`. The region decides where an
+adapter may place it; the tier decides how much authority it carries. They are orthogonal, which is
+what lets a T0 notice sit safely in the `data` region.
 
-**Composition is deterministic.** Fixed block order, never reordered by score. The three practical
-hazards are handled explicitly: `now` is captured once per turn and passed in; collections are sorted
-before rendering; score ties break by `memory_id`.
+The invariant becomes:
 
-**Budget uses fixed floors and caps, not fill-until-full.** Identity is never sacrificed — if it does
-not fit, compilation raises rather than truncating, because silently trimming identity is silently
-changing who Apollo is, and it would happen exactly during long interesting conversations.
+> **Data cannot impersonate policy or the current user request.**
 
-Rendering to a wire format belongs to the adapter (ADR-0002).
+Not "everything below T0 is inert data", which would have made Apollo useless.
+
+Three independent mechanisms enforce it: region separation (§G.3 render contract, tested by Gate 1),
+escaping (below), and a plain statement in `CONTEXT_RULES` that persona cases verify.
+
+### Escaping, implemented
+
+Every block body placed into a delimited region is escaped before fencing: `\` → `\\`, then `<` → `\<`
+and `>` → `\>`, decoded left to right. No `<` or `>` survives unescaped, so no body can contain `<<<`
+or `>>>` — content can neither terminate its own block nor fabricate a notice or policy block. Total
+and exactly reversible, so replay reproduces it and the original is recoverable. **The database stores
+the unescaped original**; escaping exists only in the rendered request.
+
+Blocks carried as native structured fields rely on the transport's encoding; the adapter guarantees
+content cannot escape its structural boundary either way.
+
+The current user message is **never** fenced or escaped — it is the request, rendered verbatim.
+
+Blanket escaping is verbose for code-bearing memories. Accepted: one sentence to specify, trivial to
+test. Minimal escaping and content-derived nonces are documented alternatives under a named trigger.
+
+### Composition and budget
+
+Deterministic: fixed block order, never reordered by score. `now` captured once per turn and passed
+in; collections sorted before rendering; ties broken by `memory_id`. `system_note` messages are
+excluded from history, because rendering a Core-authored note as dialogue would misattribute it.
+
+Fixed floors and caps, not fill-until-full. **Identity is never sacrificed** — if it does not fit,
+compilation raises rather than truncating, because silently trimming identity is silently changing
+who Apollo is, and it would happen exactly during long interesting conversations.
 
 ## Consequences
 
-- "What did the model see" is answerable structurally.
-- The trust boundary is a property of the pipeline rather than a convention.
-- Escaping means rendered text differs from stored text; every path that displays memory content to a
-  human must use the stored form, not the rendered one.
-- `compiler_version` becomes a first-class version recorded on every invocation.
+- Apollo answers requests and still cannot be reconfigured by one.
+- The trust boundary is a property of the pipeline, not a convention.
+- Adapters gain a real contract to satisfy, tested at Gate 1 rather than assumed.
+- Escaping means rendered text differs from stored text; every path displaying content to a human
+  must use the stored form.
 
 ## Reversal cost
 
