@@ -1,0 +1,18 @@
+# Apollo phase zero. Secrets are never in this file (spec K.3).
+
+[core]
+log_level = "INFO"
+identity_dir = "identity"
+orphan_window_seconds = 900
+identity_token_cap = 4000
+
+[brains]
+default = "fake"
+
+[providers.fake]
+kind = "fake"
+mode = "echo"                 # echo | scripted
+allowed_modes = ["personal", "benchmark"]
+eval_only = false
+context_budget = 8000
+reserved_output = 1024
