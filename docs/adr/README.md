@@ -1,33 +1,41 @@
 # Architecture Decision Records
 
-ADRs are written at **architecture freeze**, not before. This index lists the decisions that have
-been judged foundational enough to justify one — decisions that are expensive to reverse, or that
-someone (including a future Janu, or a future Apollo) would otherwise re-litigate from scratch.
+Twelve records, covering the decisions judged expensive to reverse or likely to be re-litigated.
+One page each: context, decision, consequences, reversal cost.
 
-Each ADR will be one page: context, decision, consequences, and reversal cost.
-
-Source: [`../architecture/phase-zero-spec.md`](../architecture/phase-zero-spec.md) §N.
+Source: [`../architecture/phase-zero-spec.md`](../architecture/phase-zero-spec.md).
 
 | ADR | Decision | Status |
 |---|---|---|
-| 0001 | Apollo Core owns all durable state; model adapters are stateless and hold none | proposed |
-| 0002 | Hybrid persistence: authoritative relational state plus an advisory append-only audit stream written in the same transaction — not event sourcing | proposed |
-| 0003 | PostgreSQL is the only datastore in phase zero; no vector store, no search engine | proposed |
-| 0004 | Confidence is computed from evidence in application code; models propose claims and never grade them | proposed |
-| 0005 | Memory correction is by supersession; memory and message rows are immutable | proposed |
-| 0006 | Context is a typed bundle; rendering to model wire format belongs to the adapter | proposed |
-| 0007 | Trust tier and taint are first-class context metadata from phase zero | proposed |
-| 0008 | Turn context is reconstructed from a manifest rather than stored as a rendered prompt | proposed |
-| 0009 | Identity lives in version-controlled files and is snapshotted to the database on load | proposed |
-| 0010 | Lexical retrieval only; embeddings gated on retrieval-eval evidence | proposed |
-| 0011 | The behavioural regression suite is a release gate for identity, compiler and brain changes | proposed |
-| 0012 | Hosted brains are restricted to benchmark conversations by a runtime guard | proposed |
-| 0013 | Hidden reasoning traces are never persisted | proposed |
-| 0014 | Raw SQL with numbered migrations; no ORM | proposed |
-| 0015 | No automatic brain fallback on failure; failures are visible | proposed |
+| [0001](./ADR-0001-apollo-is-not-the-model.md) | Apollo is not the model: Core owns all durable state | accepted |
+| [0002](./ADR-0002-brain-abstraction.md) | Brain abstraction: aliases, adapter-owned rendering and tokenisation | accepted |
+| [0003](./ADR-0003-file-backed-identity.md) | Canonical identity is file-backed, composed and hashed | accepted |
+| [0004](./ADR-0004-relational-state-transactional-audit.md) | Relational state of record with a transactional audit stream | accepted |
+| [0005](./ADR-0005-memory-provenance-supersession.md) | Memory provenance, evidence-derived confidence, correction by supersession | accepted |
+| [0006](./ADR-0006-context-compiler.md) | Context compiler: typed trust-labelled blocks, deterministic composition | accepted |
+| [0007](./ADR-0007-turn-auditability.md) | Turn auditability by manifest reconstruction; no stored prompts or reasoning traces | accepted |
+| [0008](./ADR-0008-conversation-privacy-modes.md) | Conversation privacy modes gate which brains may be used | accepted |
+| [0009](./ADR-0009-no-transparent-fallback.md) | No transparent cross-provider fallback | accepted |
+| [0010](./ADR-0010-user-authorized-memory-promotion.md) | Memory promotion requires explicit user authorization | accepted |
+| [0011](./ADR-0011-lexical-retrieval-only.md) | Lexical retrieval only; embeddings gated on retrieval-eval evidence | accepted |
+| [0012](./ADR-0012-behavioural-compatibility-gate.md) | Behavioural compatibility is a separate gate from protocol compatibility | accepted |
+
+## Mapping to nominated topics
+
+Janu nominated nine topics. Eight map one-to-one (0001, 0002, 0003, 0004, 0005, 0006, 0008, 0009,
+0010 — memory provenance and supersession merged into one record because they are one decision).
+Three additions, each justified rather than manufactured:
+
+- **0007 — turn auditability.** The "why did Apollo say this" guarantee constrains immutability
+  across the schema and is expensive to retrofit. It also depends on 0005, and the dependency should
+  be written down.
+- **0011 — lexical retrieval only.** Low reversal cost, but it encodes a *decision procedure* for
+  how "shouldn't we add a vector DB?" gets answered in future, which is what ADRs are for.
+- **0012 — behavioural compatibility gate.** The operational form of the state-vs-behavioural
+  continuity distinction. Without it, ADR-0001 gets over-read as "drop-in replaceable".
 
 ## Not ADR-worthy
 
-Recorded here so the question is not reopened: library choices (FastAPI, psycopg, pytest), ID format,
-retrieval K, budget percentages, and the confidence constants are all **safe defaults** listed in
-§P.2 of the specification. They are cheap to change and do not need a decision record.
+Library choices (FastAPI, psycopg, pytest, no ORM), ID format, retrieval K, budget percentages,
+confidence constants, intent patterns and proposal expiry are **safe defaults** listed in §P.2 of the
+specification. They are cheap to change and do not get records.
