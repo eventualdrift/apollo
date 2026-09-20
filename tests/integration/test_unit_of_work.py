@@ -75,9 +75,9 @@ def test_forced_failure_between_state_and_audit_leaves_neither(db: Database) -> 
 
 
 def test_mutating_without_recording_an_event_is_refused(db: Database) -> None:
-    with pytest.raises(UnitOfWorkError, match="without recording an audit event"):
-        with unit_of_work(db) as uow:
-            ConversationRepository(uow).create(mode="personal", now=NOW)
+    with pytest.raises(UnitOfWorkError, match="without recording an audit event"), \
+            unit_of_work(db) as uow:
+        ConversationRepository(uow).create(mode="personal", now=NOW)
     assert _count(db, "conversation") == 0
 
 
@@ -152,9 +152,9 @@ def test_application_role_cannot_modify_the_audit_stream(fresh_database) -> None
         )
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             cur.execute("UPDATE audit_event SET event_type = 'turn.failed'")
-    with psycopg.connect(app, autocommit=True) as conn, conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            cur.execute("DELETE FROM audit_event")
+    with psycopg.connect(app, autocommit=True) as conn, conn.cursor() as cur, \
+            pytest.raises(psycopg.errors.InsufficientPrivilege):
+        cur.execute("DELETE FROM audit_event")
 
 
 def test_messages_are_write_once(db: Database) -> None:
@@ -163,14 +163,14 @@ def test_messages_are_write_once(db: Database) -> None:
         MessageRepository(uow).append(
             conversation_id=conv, role="user", content="hello", now=NOW
         )
-    with db.connect() as conn, conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.RestrictViolation, match="write-once"):
-            cur.execute("UPDATE message SET content = 'tampered'")
+    with db.connect() as conn, conn.cursor() as cur, \
+            pytest.raises(psycopg.errors.RestrictViolation, match="write-once"):
+        cur.execute("UPDATE message SET content = 'tampered'")
 
 
 def test_conversation_mode_is_immutable(db: Database) -> None:
     with unit_of_work(db, expect_audit=False) as uow:
         ConversationRepository(uow).create(mode="personal", now=NOW)
-    with db.connect() as conn, conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.RestrictViolation, match="mode is write-once"):
-            cur.execute("UPDATE conversation SET mode = 'benchmark'")
+    with db.connect() as conn, conn.cursor() as cur, \
+            pytest.raises(psycopg.errors.RestrictViolation, match="mode is write-once"):
+        cur.execute("UPDATE conversation SET mode = 'benchmark'")

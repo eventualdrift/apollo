@@ -46,14 +46,23 @@ class AuditRecord(Protocol):
     `apollo.audit.events.AuditEvent` satisfies this without declaring it.
     """
 
-    event_type: Any
-    occurred_at: datetime
-    actor: Any
-    subject_kind: str
-    subject_id: uuid.UUID | None
-    conversation_id: uuid.UUID | None
-    turn_id: uuid.UUID | None
-    payload: dict[str, Any]
+    # Read-only properties, so a frozen dataclass satisfies the protocol.
+    @property
+    def event_type(self) -> Any: ...
+    @property
+    def occurred_at(self) -> datetime: ...
+    @property
+    def actor(self) -> Any: ...
+    @property
+    def subject_kind(self) -> str: ...
+    @property
+    def subject_id(self) -> uuid.UUID | None: ...
+    @property
+    def conversation_id(self) -> uuid.UUID | None: ...
+    @property
+    def turn_id(self) -> uuid.UUID | None: ...
+    @property
+    def payload(self) -> dict[str, Any]: ...
 
 
 class UnitOfWorkError(ApolloError):
@@ -75,6 +84,14 @@ class UnitOfWork:
         self._check_open()
         return self._conn
 
+    def audit_only(self) -> None:
+        """Declare that this unit of work records events without mutating state.
+
+        Used by paths that must leave an audit trail for something that did not
+        change Apollo's own tables — a refusal, for instance.
+        """
+        self._expect_audit = False
+
     def record(self, event: AuditRecord) -> None:
         """Buffer an audit event. It commits with the state change or not at all."""
         self._check_open()
@@ -87,7 +104,7 @@ class UnitOfWork:
         if upper in {"INSERT", "UPDATE", "DELETE"}:
             self._mutated = True
         cur = self._conn.cursor()
-        cur.execute(query, params)  # type: ignore[arg-type]
+        cur.execute(query, params)
         return cur
 
     def _check_open(self) -> None:

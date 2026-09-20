@@ -34,7 +34,7 @@ def test_empty_database_gets_the_eleven_table_schema(db: Database) -> None:
         r["tablename"]
         for r in _rows(db, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     }
-    assert EXPECTED_TABLES <= names
+    assert names >= EXPECTED_TABLES
     assert len(EXPECTED_TABLES & names) == 11
 
 

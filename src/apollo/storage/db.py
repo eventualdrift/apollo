@@ -78,7 +78,7 @@ class Database:
                 if path.name in done:
                     continue
                 with conn.transaction(), conn.cursor() as cur:
-                    cur.execute(path.read_text(encoding="utf-8"))  # type: ignore[arg-type]
+                    cur.execute(path.read_text(encoding="utf-8"))
                     cur.execute("INSERT INTO schema_migration (name) VALUES (%s)", (path.name,))
                 applied.append(path.name)
                 log.info("migration.applied", extra={"migration": path.name})

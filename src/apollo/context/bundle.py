@@ -29,7 +29,7 @@ class TrustTier(StrEnum):
     EXTERNAL = "T5"
 
     @property
-    def index(self) -> int:
+    def level(self) -> int:
         return int(self.value[1:])
 
     @property
@@ -67,7 +67,7 @@ class Purpose(StrEnum):
 
 
 #: The tier at or above which a block is considered to taint an invocation.
-TAINT_THRESHOLD = TrustTier.DERIVED.index
+TAINT_THRESHOLD = TrustTier.DERIVED.level
 
 
 @dataclass(frozen=True)

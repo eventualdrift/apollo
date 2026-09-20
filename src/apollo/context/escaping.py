@@ -63,4 +63,5 @@ def fence(header: str, body: str, *, label: str) -> str:
     """
     if contains_fence_delimiter(header):
         raise UnescapeError("fence header may not contain a delimiter")
-    return f"{FENCE_OPEN}{header}{FENCE_CLOSE}\n{escape(body)}\n{FENCE_OPEN}END {label}{FENCE_CLOSE}"
+    closing = f"{FENCE_OPEN}END {label}{FENCE_CLOSE}"
+    return f"{FENCE_OPEN}{header}{FENCE_CLOSE}\n{escape(body)}\n{closing}"

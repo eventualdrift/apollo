@@ -44,4 +44,5 @@ class IdentityVersionRepository:
         cur = self._uow.execute(
             "SELECT * FROM identity_version WHERE content_hash = %s", (content_hash,)
         )
-        return cur.fetchone()
+        row: dict[str, Any] | None = cur.fetchone()
+        return row

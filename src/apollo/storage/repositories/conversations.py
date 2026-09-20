@@ -23,7 +23,8 @@ class ConversationRepository:
 
     def get(self, conversation_id: uuid.UUID) -> dict[str, Any] | None:
         cur = self._uow.execute("SELECT * FROM conversation WHERE id = %s", (conversation_id,))
-        return cur.fetchone()
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
 
     def touch(self, conversation_id: uuid.UUID, now: datetime) -> None:
         self._uow.execute(

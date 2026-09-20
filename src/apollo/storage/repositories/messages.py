@@ -58,7 +58,8 @@ class MessageRepository:
             "SELECT * FROM message WHERE conversation_id = %s AND client_idempotency_key = %s",
             (conversation_id, key),
         )
-        return cur.fetchone()
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
 
     def history(
         self, conversation_id: uuid.UUID, *, before_seq: int | None = None, limit: int = 200

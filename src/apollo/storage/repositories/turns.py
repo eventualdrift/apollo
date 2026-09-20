@@ -70,11 +70,13 @@ class TurnRepository:
 
     def get(self, turn_id: uuid.UUID) -> dict[str, Any] | None:
         cur = self._uow.execute("SELECT * FROM turn WHERE id = %s", (turn_id,))
-        return cur.fetchone()
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
 
     def find_by_request_message(self, message_id: uuid.UUID) -> dict[str, Any] | None:
         cur = self._uow.execute("SELECT * FROM turn WHERE request_message_id = %s", (message_id,))
-        return cur.fetchone()
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
 
     def expire_orphans(self, *, older_than: datetime, now: datetime) -> int:
         """Turns left `started` beyond the window become `interrupted` (spec A.2)."""

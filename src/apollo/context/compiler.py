@@ -27,12 +27,12 @@ from apollo.context.budget import (
     conversation_allowance,
 )
 from apollo.context.bundle import (
+    TAINT_THRESHOLD,
     BlockType,
     ContextBlock,
     ContextBundle,
     Purpose,
     Region,
-    TAINT_THRESHOLD,
     TrustTier,
     compute_bundle_hash,
 )
@@ -184,7 +184,7 @@ def _block(
         content=content,
         token_estimate=estimator.count(content),
         role=role,
-        taint=tier.index if tier.index >= TAINT_THRESHOLD else 0,
+        taint=tier.level if tier.level >= TAINT_THRESHOLD else 0,
     )
 
 
@@ -207,7 +207,7 @@ def _finalise(
         manifest.append(entry)
         dropped_entries.append(entry)
 
-    max_tier = max((b.trust_tier for b in blocks), key=lambda t: t.index)
+    max_tier = max((b.trust_tier for b in blocks), key=lambda t: t.level)
     taint = max((b.taint for b in blocks), default=0)
     total = sum(b.token_estimate for b in blocks)
     bundle = ContextBundle(

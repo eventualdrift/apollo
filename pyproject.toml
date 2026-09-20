@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.5", "mypy>=1.10"]
+dev = ["pytest>=8.0", "ruff>=0.5", "mypy>=1.10", "types-PyYAML"]
 
 [project.scripts]
 apollo = "apollo.cli.main:main"
@@ -47,3 +47,9 @@ warn_unreachable = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 strict = false
+
+# psycopg ships no stubs for the parts used here; the repository layer is
+# covered by integration tests against real PostgreSQL instead.
+[[tool.mypy.overrides]]
+module = ["psycopg", "psycopg.*", "yaml"]
+ignore_missing_imports = true

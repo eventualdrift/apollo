@@ -123,7 +123,8 @@ class InvocationRepository:
         cur = self._uow.execute(
             "SELECT * FROM model_invocation WHERE id = %s", (invocation_id,)
         )
-        return cur.fetchone()
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
 
     def is_started(self, invocation_id: uuid.UUID) -> bool:
         """Used by the single invocation path to refuse an unrecorded model call."""
