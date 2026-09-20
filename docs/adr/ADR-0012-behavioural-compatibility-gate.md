@@ -22,8 +22,10 @@ Two distinct, named concepts:
 
 And two gates, both of which a brain must pass before it may be bound to `brain.default`:
 
-**Gate 1 — protocol compatibility.** Mechanical. Implements `Brain`; sufficient context length;
-renders a representative bundle; returns a well-formed `Generation`; declares `allowed_modes`.
+**Gate 1 — protocol compatibility.** Mechanical. Implements `Brain`; declares `adapter_key`,
+`render_version`, `allowed_modes` and `eval_only`; sufficient context length; renders a
+representative bundle, including one with deliberate fence-delimiter collisions; returns a
+well-formed `Generation`.
 
 **Gate 2 — behavioural compatibility.** Empirical. The persona suite runs against the candidate at
 the current identity hash; the diff against the incumbent is reviewed; every changed case is accepted

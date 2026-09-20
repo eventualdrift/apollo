@@ -1,6 +1,6 @@
 # ADR-0002 — Brain abstraction: aliases, adapter-owned rendering and tokenisation
 
-Status: accepted · 2026-09-20
+Status: accepted · 2026-09-20 (rev 2: `render_version`)
 
 ## Context
 
@@ -9,25 +9,40 @@ upward if the seam is drawn badly: chat models want a messages array with a syst
 want one string with a chat template, some servers reject system roles, and every family tokenises
 differently.
 
-The initial local deployment is `llama.cpp`'s server. That is a deployment choice made on the merits
-of the current hardware, not an architectural commitment.
+The initial local deployment is `llama.cpp`'s server — a deployment choice on the merits of current
+hardware, not an architectural commitment.
 
 ## Decision
 
 Code and configuration refer to **aliases** — `brain.default`, `brain.reference`, `brain.fake` —
 never to model names. Configuration binds an alias to a provider.
 
-Two responsibilities belong to the adapter, not to Core:
+Three responsibilities belong to the adapter, not to Core:
 
-1. **Rendering.** The context compiler emits a typed `ContextBundle`. The adapter renders it into
-   that model's wire format. If Core rendered, every wire-format difference would be a Core change.
+1. **Rendering.** The compiler emits a typed `ContextBundle`; the adapter renders it into that
+   model's wire format, including applying the fence escaping of ADR-0006. If Core rendered, every
+   wire-format difference would be a Core change.
 2. **Token counting.** Adapters supply a `TokenEstimator` through `ModelCapabilities`. Core owns
-   budget *policy* — what has priority, what is dropped, what is reserved — and asks the adapter for
-   counts. Core is never taught a model family's tokenisation rules.
+   budget *policy* — priority, reservation, what is dropped — and asks the adapter for counts. Core
+   is never taught a model family's tokenisation rules. A documented conservative fallback
+   (`ceil(len/3)`) applies when no exact counter exists: over-estimating truncates slightly more
+   history, under-estimating overflows the context, and only one of those is recoverable.
+3. **Declaring `render_version`.** Every adapter declares `adapter_key` and `render_version`, and
+   both are recorded on every model invocation.
 
-A documented conservative fallback estimator (`ceil(len/3)`) applies when no exact counter exists.
-Three characters per token rather than four is deliberate: over-estimating truncates slightly more
-history, under-estimating overflows the context, and only one of those is recoverable.
+**`render_version` identifies the exact bundle-to-request transformation**: block ordering,
+system-role placement, fence application, escaping, message-array shape, parameter mapping. It is
+bumped whenever that transformation changes in a way that alters the bytes sent. It is not a package
+version and must not be derived from one.
+
+It exists because `compiler_version` describes only how the *bundle* was built. Since rendering is
+adapter-owned, `compiler_version` alone cannot reproduce what a model was sent — a claim the earlier
+revision of this architecture made incorrectly. Replay needs both:
+
+```
+sources → compiler_version → ContextBundle → verify bundle hash
+        → adapter_key + render_version → RenderedRequest → verify rendered_prompt_hash
+```
 
 No llama.cpp-specific string, parameter or assumption may appear outside
 `brains/openai_compatible.py` and configuration.
@@ -36,9 +51,10 @@ No llama.cpp-specific string, parameter or assumption may appear outside
 
 - Moving to Ollama, vLLM, SGLang, another machine or dedicated hardware is a config change.
 - A runtime that cannot satisfy the contract gets a new adapter, never a change in Core.
-- Because estimators differ per adapter, the same conversation can budget differently per brain.
-  Eval runs therefore pin `conservative-v1` for all brains so bundles are byte-identical and
-  behavioural differences are attributable to the model. `turn.token_estimator` records which applied.
+- Changing rendering requires a deliberate `render_version` bump, and historical turns rendered under
+  a retired version replay with `render_status=RENDERER_UNAVAILABLE` rather than a false match.
+- Because estimators differ per adapter, eval runs pin `conservative-v1` for all brains so bundles
+  are byte-identical and behavioural differences are attributable to the model.
 
 ## Reversal cost
 
