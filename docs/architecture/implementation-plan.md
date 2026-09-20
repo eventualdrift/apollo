@@ -28,7 +28,7 @@ the rule that no transaction spans a model call.
 ### Step 3. Identity
 `manifest.yaml` plus `core.md`, `behaviour.md`, `relationship.md`, extracted from the behaviour
 contract. Deterministic composition, hashing over composed text, snapshot into `identity_version`.
-*Satisfies: O.1/26.*
+Foundational; no acceptance criterion rests on this step alone.
 
 ### Step 4. Context bundle, rules, escaping, estimator
 `ContextBundle`/`ContextBlock` types with trust tier, **region** and taint. `context/escaping.py`
