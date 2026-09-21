@@ -22,6 +22,12 @@ MODE_PERSONAL = "personal"
 MODE_BENCHMARK = "benchmark"
 MODES = (MODE_PERSONAL, MODE_BENCHMARK)
 
+#: Which surface a request came from. An `eval_only` provider is reachable only
+#: from the eval runner.
+SURFACE_INTERACTIVE = "interactive"
+SURFACE_EVAL = "eval"
+SURFACES = (SURFACE_INTERACTIVE, SURFACE_EVAL)
+
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -39,6 +45,16 @@ class ProviderConfig:
         for mode in self.allowed_modes:
             if mode not in MODES:
                 raise ConfigError(f"provider {self.key}: unknown mode {mode!r}")
+
+    def resolvable_from(self, surface: str) -> bool:
+        """Whether this provider may be constructed at all on `surface`.
+
+        Lives on the configuration object because `eval_only` is a
+        configuration declaration, and because both independent enforcement
+        points — the brain registry and `core/policy` — must consult the same
+        rule without `brains/` importing `core/` (spec A.3).
+        """
+        return not self.eval_only or surface == SURFACE_EVAL
 
 
 @dataclass(frozen=True)

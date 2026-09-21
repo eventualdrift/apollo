@@ -9,7 +9,10 @@ orphan_window_seconds = 900
 identity_token_cap = 4000
 
 [brains]
+# Code refers to aliases, never to model names.
 default = "fake"
+reference = "reference"
+fake = "fake"
 
 [providers.fake]
 kind = "fake"
@@ -18,3 +21,33 @@ allowed_modes = ["personal", "benchmark"]
 eval_only = false
 context_budget = 8000
 reserved_output = 1024
+
+# The initial local deployment is llama.cpp's server. That is a deployment
+# choice: any OpenAI-compatible endpoint (vLLM, SGLang, Ollama, another
+# machine) works by editing base_url and model. Core knows none of them.
+#
+# [providers.local]
+# kind = "openai_compatible"
+# base_url = "http://127.0.0.1:8080/v1"
+# model = "<serving model id>"
+# context_budget = 8000
+# reserved_output = 1024
+# allowed_modes = ["personal", "benchmark"]
+# eval_only = false
+
+# The hosted reference model is an evaluation facility, not a chat brain.
+# eval_only = true makes it unreachable from interactive Apollo, and
+# allowed_modes excludes personal. Both are checked, independently.
+#
+# api_key_env names the ENVIRONMENT VARIABLE, never the key itself: a key in a
+# committed file is a key in git history for ever.
+#
+# [providers.reference]
+# kind = "openai_compatible"
+# base_url = "<hosted endpoint>"
+# model = "<hosted model id>"
+# api_key_env = "APOLLO_REFERENCE_API_KEY"
+# context_budget = 8000
+# reserved_output = 1024
+# allowed_modes = ["benchmark"]
+# eval_only = true

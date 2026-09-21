@@ -81,6 +81,11 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
         "completion_tokens",
         "reasoning_tokens",
         "provider_key",
+        # Named in the H.5 whitelist: an opaque provider correlation id. It
+        # carries no content and lets a failure here be matched against the
+        # provider's own logs. brain.fake supplies none, so the first real
+        # adapter is what surfaced its absence here.
+        "provider_request_id",
         "purpose",
         "render_version",
         "retry_of_invocation_id",
