@@ -450,8 +450,8 @@ primary key (turn_retrieval_id, memory_id)
 id                uuid pk
 scope             text not null   -- self | user | relationship | world
 kind              text not null   -- fact|preference|person|project|decision|constraint|event
-subject           text not null
-content           text not null
+subject           text            -- NOT NULL while live; NULL only once tombstoned
+content           text            -- NOT NULL while live; NULL only once tombstoned
 origin_tier       text not null   -- user_asserted | model_inferred | connector_imported
 origin            text not null   -- personal | fixture
 status            text not null   -- active | superseded | archived | tombstoned
@@ -463,7 +463,18 @@ superseded_by_id  uuid null fk -> memory
 archived_at       timestamptz null
 tombstoned_at     timestamptz null
 search_vector     tsvector generated over (subject || content), GIN indexed
+
+check memory_content_presence_ck:
+    status = 'tombstoned'  ->  subject IS NULL     AND content IS NULL
+    status <> 'tombstoned' ->  subject IS NOT NULL AND content IS NOT NULL
 ```
+
+**Nullability of `subject` and `content`.** They are NOT NULL for every live status — `active`,
+`superseded`, `archived` — and NULL once, and only once, the row is tombstoned. A plain `NOT NULL`
+column could not express that, because tombstoning must be able to remove the claim text (§D.7); a
+`CHECK` carries the "not null while live" intent exactly and keeps deletion possible. This is the
+schema-level expression of a semantic decision the frozen architecture already made, not a loosening
+of it.
 
 **`origin_tier` records where the claim came from and never changes.** It is not a measure of how
 well supported the claim is now. Support is derived from observations (§D.8). The earlier
@@ -489,13 +500,19 @@ both "where this came from" and "how well attested it is now". Phase zero writes
 **Mutability, precisely.** This is the invariant reconstruction depends on, and it is narrower than
 "memory rows are immutable":
 
-| Write-once | Mutable |
-|---|---|
-| `scope`, `kind`, `subject`, `content`, `origin_tier`, `origin`, `created_at` | `status`, `pinned`, `superseded_by_id`, `last_confirmed_at`, `archived_at`, `tombstoned_at`, `updated_at` |
+| Write-once, always | Write-once, except cleared by a tombstone | Mutable |
+|---|---|---|
+| `scope`, `kind`, `origin_tier`, `origin`, `created_at` | `subject`, `content` | `status`, `pinned`, `superseded_by_id`, `last_confirmed_at`, `archived_at`, `tombstoned_at`, `updated_at` |
 
 **Claim content is immutable; lifecycle metadata is not.** Corrections create a new row rather than
 editing an old one. The one operation that removes content is tombstone (§D.7), which is deliberate
 and which invalidates reconstruction for turns referencing it (§H.4).
+
+**Classification and provenance are write-once in every transition, the tombstone included.** A
+tombstone may clear the claim text and set lifecycle fields; it may never rewrite `scope`, `kind`,
+`origin_tier`, `origin` or `created_at`. Provenance outlives the claim it describes — which is the
+point of recording it separately from the claim (ADR-0005). Two triggers rather than one enforce
+this: a tombstone-exempt rule for the text, and an unconditional rule for everything else.
 
 Deliberately absent: any stored confidence number, any denormalised counts, any importance field.
 

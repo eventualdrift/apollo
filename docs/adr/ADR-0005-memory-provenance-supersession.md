@@ -48,13 +48,22 @@ is how one sloppy sentence deletes something true.
 The earlier revision claimed "memory rows are immutable", which was false and load-bearing for
 replay. The real invariant is narrower:
 
-| Write-once | Mutable |
-|---|---|
-| `scope`, `kind`, `subject`, `content`, `origin_tier`, `origin`, `created_at` | `status`, `pinned`, `superseded_by_id`, `last_confirmed_at`, `archived_at`, `tombstoned_at`, `updated_at` |
+| Write-once, always | Write-once, except cleared by a tombstone | Mutable |
+|---|---|---|
+| `scope`, `kind`, `origin_tier`, `origin`, `created_at` | `subject`, `content` | `status`, `pinned`, `superseded_by_id`, `last_confirmed_at`, `archived_at`, `tombstoned_at`, `updated_at` |
 
 **Claim content is immutable; lifecycle metadata is not.** The one operation that removes content is
 tombstone, which is deliberate and which invalidates reconstruction for turns referencing it
 (ADR-0007). Archive and supersession both preserve content and therefore preserve replay.
+
+`subject` and `content` are therefore NOT NULL for every live status and NULL only once tombstoned,
+held by a CHECK rather than by a column constraint — a plain `NOT NULL` could not express "not null
+while live" and would make deletion impossible.
+
+**Provenance outlives the claim it describes.** Classification and provenance stay write-once in
+every transition, the tombstone included: a tombstone clears the text and sets lifecycle fields, and
+can never rewrite `origin_tier`, `scope`, `kind`, `origin` or `created_at`. Recording provenance
+separately from the claim is pointless if the act of deleting the claim can rewrite it.
 
 ## Consequences
 
