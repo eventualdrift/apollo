@@ -149,3 +149,50 @@ def test_memory_proposal_bundle_renders_its_source_message_as_fenced_data() -> N
     assert "<<<SOURCE_MESSAGE" in last
     body = last.split("\n")[1]
     assert not contains_fence_delimiter(body)
+
+
+# ---------------------------------------------------------------------------
+# InvocationOutcome.ok — the invariant itself, stated explicitly so the
+# classification bug cannot recur silently (independent review P1).
+# ---------------------------------------------------------------------------
+
+
+def _outcome(generation, error):
+    import uuid
+
+    from apollo.core.invocations import InvocationOutcome
+
+    return InvocationOutcome(invocation_id=uuid.uuid4(), generation=generation, error=error)
+
+
+def _a_generation():
+    from apollo.brains.base import Generation
+
+    return Generation(
+        text="something",
+        finish_reason="stop",
+        model_identifier="fake/test",
+        latency_ms=1,
+        rendered_prompt_hash="h",
+    )
+
+
+def test_outcome_is_ok_only_with_a_generation_and_no_error() -> None:
+    assert _outcome(_a_generation(), None).ok is True
+
+
+def test_outcome_with_both_a_generation_and_an_error_is_not_ok() -> None:
+    """The bug: a returned-but-empty generation raises after the object exists."""
+    from apollo.errors import EmptyGenerationError
+
+    assert _outcome(_a_generation(), EmptyGenerationError("empty")).ok is False
+
+
+def test_outcome_with_only_an_error_is_not_ok() -> None:
+    from apollo.errors import BrainTransportError
+
+    assert _outcome(None, BrainTransportError(http_status=503)).ok is False
+
+
+def test_outcome_with_neither_is_not_ok() -> None:
+    assert _outcome(None, None).ok is False

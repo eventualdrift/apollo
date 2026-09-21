@@ -42,7 +42,15 @@ class InvocationOutcome:
 
     @property
     def ok(self) -> bool:
-        return self.generation is not None
+        """Success needs both halves: a generation, and no error.
+
+        A provider can return a `Generation` object whose text is empty, which
+        raises `EmptyGenerationError` *after* the object exists. Testing only
+        for the object's presence therefore called that turn a success while
+        the invocation row recorded `empty_generation` — an internally
+        contradictory durable state, with a blank Apollo message persisted.
+        """
+        return self.generation is not None and self.error is None
 
 
 def open_invocation(
