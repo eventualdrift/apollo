@@ -1,4 +1,9 @@
 # Phase zero runs one service. No broker, no cache, no vector store.
+#
+# POSTGRES_USER is the *owner* role: it runs migrations and owns schema objects.
+# Apollo itself connects as the unprivileged `apollo_app` role, which `apollo
+# provision` creates. Do not point APOLLO_DATABASE_DSN at apollo_owner — the
+# owner can bypass the audit-stream grants that make it append-only.
 services:
   postgres:
     image: postgres:16

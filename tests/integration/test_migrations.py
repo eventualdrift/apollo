@@ -38,9 +38,18 @@ def test_empty_database_gets_the_eleven_table_schema(db: Database) -> None:
     assert len(EXPECTED_TABLES & names) == 11
 
 
-def test_migrations_are_repeatable(db: Database) -> None:
-    assert db.migrate() == []  # already applied by the fixture
-    assert db.migrate() == []
+def test_migrations_are_repeatable(owner_db: Database) -> None:
+    """Migrations run as the owner, never as the runtime role."""
+    assert owner_db.migrate() == []  # already applied by the fixture
+    assert owner_db.migrate() == []
+
+
+def test_the_runtime_role_cannot_migrate(db: Database) -> None:
+    """Least privilege is real: Apollo's own connection cannot alter the schema."""
+    import psycopg
+
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        db.migrate()
 
 
 def test_key_constraints_and_indexes_exist(db: Database) -> None:

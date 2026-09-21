@@ -43,9 +43,15 @@ class ProviderConfig:
 
 @dataclass(frozen=True)
 class Config:
+    #: The *runtime* DSN. Connects as the least-privilege application role,
+    #: which cannot UPDATE or DELETE `audit_event` (spec H.3, K.4).
     database_dsn: str
     providers: dict[str, ProviderConfig]
     brain_aliases: dict[str, str]
+    #: The owner/migration DSN. Set only when provisioning or migrating; the
+    #: ordinary runtime path must never have it.
+    admin_dsn: str | None = None
+    runtime_role: str = "apollo_app"
     log_level: str = "INFO"
     identity_dir: Path = Path("identity")
     #: Turns/invocations left `started` longer than this become `interrupted`.
@@ -97,6 +103,8 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
     core = raw.get("core", {})
     return Config(
         database_dsn=dsn,
+        admin_dsn=env.get("APOLLO_ADMIN_DSN"),
+        runtime_role=env.get("APOLLO_RUNTIME_ROLE", core.get("runtime_role", "apollo_app")),
         providers=providers,
         brain_aliases=aliases,
         log_level=env.get("APOLLO_LOG_LEVEL", core.get("log_level", "INFO")),

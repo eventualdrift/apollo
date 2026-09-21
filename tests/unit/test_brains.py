@@ -5,16 +5,9 @@ from __future__ import annotations
 import pathlib
 from datetime import UTC, datetime
 
-import pytest
-
 from apollo.brains.base import (
     Brain,
     GenerationParams,
-    RenderContractError,
-    RenderedMessage,
-    RenderedRequest,
-    prompt_hash,
-    verify_region_contract,
 )
 from apollo.brains.fake import FakeBrain
 from apollo.context.budget import Budget
@@ -118,36 +111,8 @@ def test_render_is_deterministic() -> None:
     assert a.prompt_hash == b.prompt_hash
 
 
-def test_region_contract_rejects_data_in_the_policy_region() -> None:
-    b = bundle()
-    # A deliberately wrong render: everything flattened into one system message.
-    bad = RenderedRequest(
-        messages=(RenderedMessage(role="system", content="all of it"),),
-        placement=tuple((block.position, 0) for block in b.blocks),
-        prompt_hash="x",
-    )
-    with pytest.raises(RenderContractError, match="landed in the policy region"):
-        verify_region_contract(b, bad)
-
-
-def test_region_contract_rejects_an_unescaped_data_block() -> None:
-    b = bundle()
-    data = b.blocks_in(Region.DATA)[0]
-    messages = (
-        RenderedMessage(role="system", content="policy"),
-        RenderedMessage(role="user", content=data.content),  # raw, not escaped
-    )
-    bad = RenderedRequest(
-        messages=messages,
-        placement=((b.blocks_in(Region.POLICY)[0].position, 0), (data.position, 1)),
-        prompt_hash=prompt_hash(list(messages)),
-    )
-    # This block has no angle brackets, so escaping is an identity transform and
-    # the escaped form is present. The contract check that bites here is the
-    # request block being absent entirely.
-    with pytest.raises(RenderContractError):
-        verify_region_contract(b, bad)
-
+# Region-contract violation cases now live in test_region_contract.py, where
+# they are driven by rendered bytes rather than by the placement map.
 
 def test_generate_returns_a_well_formed_generation() -> None:
     brain = FakeBrain()

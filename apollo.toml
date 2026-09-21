@@ -1,6 +1,8 @@
 # Apollo phase zero. Secrets are never in this file (spec K.3).
 
 [core]
+# The least-privilege role Apollo runs as. Created by `apollo provision`.
+runtime_role = "apollo_app"
 log_level = "INFO"
 identity_dir = "identity"
 orphan_window_seconds = 900

@@ -17,8 +17,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from apollo.context.bundle import ContextBundle, Region
-from apollo.context.escaping import contains_fence_delimiter, escape, fence
+from apollo.context.bundle import BlockType, ContextBundle, Region
+from apollo.context.escaping import FENCE_CLOSE, FENCE_OPEN, escape, fence
 from apollo.context.estimator import TokenEstimator
 from apollo.errors import ApolloError
 
@@ -159,41 +159,218 @@ def prompt_hash(messages: list[RenderedMessage] | tuple[RenderedMessage, ...]) -
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def verify_region_contract(bundle: ContextBundle, request: RenderedRequest) -> None:
-    """The three hard rules of spec G.3, checked on every render.
+#: Labels that may legitimately open a fence. Used to parse rendered bytes back
+#: into fenced regions without trusting any adapter bookkeeping.
+_FENCE_LABELS = frozenset(bt.value for bt in BlockType)
 
-    Cheap enough to run always, and running always is what makes it a property
-    rather than something Gate 1 happens to catch.
+
+def parse_fences(text: str) -> tuple[list[tuple[str, str]], str]:
+    """Split rendered text into (label, body) fences and the unfenced remainder.
+
+    Parsed from the bytes the provider will actually receive. A malformed or
+    unmatched delimiter is not a fence: `<<<END MEMORY>>>` sitting in ordinary
+    prose opens nothing, which is why a user may type one in a request without
+    creating a region.
     """
-    index_of = {position: message_index for position, message_index in request.placement}
-    policy_indexes = {
-        index_of[b.position] for b in bundle.blocks_in(Region.POLICY) if b.position in index_of
-    }
-    for block in bundle.blocks_in(Region.DATA):
-        target = index_of.get(block.position)
-        if target is None:
-            raise RenderContractError(f"data block {block.block_type} was not rendered")
-        if target in policy_indexes:
+    fences: list[tuple[str, str]] = []
+    remainder: list[str] = []
+    i = 0
+    while True:
+        start = text.find(FENCE_OPEN, i)
+        if start == -1:
+            remainder.append(text[i:])
+            break
+        header_end = text.find(FENCE_CLOSE, start + len(FENCE_OPEN))
+        if header_end == -1:
+            remainder.append(text[i:])
+            break
+        header = text[start + len(FENCE_OPEN) : header_end]
+        label = header.split(" ", 1)[0].strip()
+        closing = f"{FENCE_OPEN}END {label}{FENCE_CLOSE}"
+        body_start = header_end + len(FENCE_CLOSE)
+        close_at = text.find(closing, body_start) if label in _FENCE_LABELS else -1
+        if close_at == -1:
+            # Not a well-formed fence; treat the delimiter as ordinary text.
+            remainder.append(text[i : start + len(FENCE_OPEN)])
+            i = start + len(FENCE_OPEN)
+            continue
+        remainder.append(text[i:start])
+        body = text[body_start:close_at]
+        # fence() writes exactly one newline either side of the escaped body.
+        if body.startswith("\n"):
+            body = body[1:]
+        if body.endswith("\n"):
+            body = body[:-1]
+        fences.append((label, body))
+        i = close_at + len(closing)
+    return fences, "".join(remainder)
+
+
+def policy_message_indexes(request: RenderedRequest) -> list[int]:
+    """Which rendered messages constitute the policy region, read from the request.
+
+    The policy region is every system-role message; where a provider has no
+    system role, it is the first message — the highest-authority position that
+    provider offers. Derived from the rendered request, never declared by the
+    adapter.
+    """
+    system = [i for i, m in enumerate(request.messages) if m.role == "system"]
+    if system:
+        return system
+    return [0] if request.messages else []
+
+
+def verify_region_contract(bundle: ContextBundle, request: RenderedRequest) -> None:
+    """The hard rules of spec G.3, checked against the actual rendered output.
+
+    This function is Gate 1's teeth, so it reads only `request.messages` — the
+    bytes the provider receives. `RenderedRequest.placement` is adapter-supplied
+    bookkeeping and is deliberately **not** consulted: an adapter that placed a
+    T3 memory inside the system message while reporting it elsewhere would
+    otherwise verify clean, which is exactly the hole this closes.
+
+    Cheap enough to run on every render, and running always is what makes the
+    contract a property rather than something Gate 1 happens to catch.
+    """
+    if not request.messages:
+        raise RenderContractError("rendered request has no messages")
+
+    policy_indexes = set(policy_message_indexes(request))
+    policy_text = "\n".join(
+        request.messages[i].content for i in sorted(policy_indexes)
+    )
+    non_policy = [
+        (i, m) for i, m in enumerate(request.messages) if i not in policy_indexes
+    ]
+
+    _verify_policy_blocks_present(bundle, policy_text)
+    _verify_no_data_in_policy(bundle, policy_text)
+    _verify_data_is_fenced_and_escaped(bundle, non_policy)
+    _verify_history_roles(bundle, non_policy)
+    _verify_request(bundle, request, policy_indexes)
+
+
+def _verify_policy_blocks_present(bundle: ContextBundle, policy_text: str) -> None:
+    """Every policy block must actually have been rendered into the policy region."""
+    for block in bundle.blocks_in(Region.POLICY):
+        if block.content.strip() and block.content.strip() not in policy_text:
             raise RenderContractError(
-                f"data block {block.block_type} landed in the policy region"
-            )
-        rendered = request.messages[target].content
-        if block.content and escape(block.content) not in rendered:
-            raise RenderContractError(
-                f"data block {block.block_type} was not escaped before fencing"
-            )
-        if contains_fence_delimiter(block.content) and block.content in rendered:
-            raise RenderContractError(
-                f"data block {block.block_type} kept a fence delimiter after rendering"
+                f"policy block {block.block_type} was not rendered into the policy region"
             )
 
-    for block in bundle.blocks_in(Region.REQUEST):
-        target = index_of.get(block.position)
-        if target is None:
-            raise RenderContractError("the request block was not rendered")
-        if target in policy_indexes:
-            raise RenderContractError("the request block landed in the policy region")
-        if block.content not in request.messages[target].content:
+
+def _verify_no_data_in_policy(bundle: ContextBundle, policy_text: str) -> None:
+    """No data block may appear in the policy region, in any form."""
+    for block in bundle.blocks_in(Region.DATA):
+        if not block.content.strip():
+            continue
+        if f"{FENCE_OPEN}{block.block_type}" in policy_text:
+            raise RenderContractError(
+                f"a {block.block_type} fence was opened inside the policy region"
+            )
+        for form, how in ((block.content, "verbatim"), (escape(block.content), "escaped")):
+            if form.strip() and form in policy_text:
+                raise RenderContractError(
+                    f"data block {block.block_type} appears {how} in the policy region"
+                )
+
+
+def _verify_data_is_fenced_and_escaped(
+    bundle: ContextBundle, non_policy: list[tuple[int, RenderedMessage]]
+) -> None:
+    """Each data block must appear as a properly fenced, escaped body outside policy."""
+    bodies: dict[str, list[str]] = {}
+    for _, message in non_policy:
+        for label, body in parse_fences(message.content)[0]:
+            bodies.setdefault(label, []).append(body)
+
+    for block in bundle.blocks_in(Region.DATA):
+        found = bodies.get(str(block.block_type), [])
+        if escape(block.content) not in found:
+            raise RenderContractError(
+                f"data block {block.block_type} was not rendered as a fenced, escaped "
+                "body outside the policy region"
+            )
+
+
+def _data_fence_spans(bundle: ContextBundle, text: str) -> list[tuple[int, int]]:
+    """Character spans in `text` occupied by a fence carrying a real data block.
+
+    Only these spans count as "fenced" when checking the request. Fence-shaped
+    text a *user* typed into their own message is rendered verbatim by design
+    and is not the adapter merging the request into a data block, which is the
+    violation this guards against.
+    """
+    spans: list[tuple[int, int]] = []
+    for block in bundle.blocks_in(Region.DATA):
+        label = str(block.block_type)
+        needle = escape(block.content)
+        closing = f"{FENCE_OPEN}END {label}{FENCE_CLOSE}"
+        cursor = 0
+        while True:
+            start = text.find(f"{FENCE_OPEN}{label}", cursor)
+            if start == -1:
+                break
+            close_at = text.find(closing, start)
+            if close_at == -1:
+                break
+            end = close_at + len(closing)
+            if needle in text[start:end]:
+                spans.append((start, end))
+            cursor = end
+    return spans
+
+
+def _verify_history_roles(
+    bundle: ContextBundle, non_policy: list[tuple[int, RenderedMessage]]
+) -> None:
+    """Prior turns keep their conversational roles and are not fenced away."""
+    for block in bundle.blocks_in(Region.HISTORY):
+        expected = "assistant" if block.role == "apollo" else "user"
+        if not any(
+            m.role == expected and block.content in parse_fences(m.content)[1]
+            for _, m in non_policy
+        ):
+            raise RenderContractError(
+                f"history block {block.source_ref} was not rendered unfenced "
+                f"as a {expected} turn"
+            )
+
+
+def _verify_request(
+    bundle: ContextBundle, request: RenderedRequest, policy_indexes: set[int]
+) -> None:
+    """The request is the final user turn, verbatim and unfenced."""
+    blocks = bundle.blocks_in(Region.REQUEST)
+    if not blocks:
+        return
+    last_index = len(request.messages) - 1
+    last = request.messages[last_index]
+    if last_index in policy_indexes:
+        raise RenderContractError("the request block landed in the policy region")
+    if last.role != "user":
+        raise RenderContractError("the request block must be the final user turn")
+
+    spans = _data_fence_spans(bundle, last.content)
+    outside = _excise(last.content, spans)
+    for block in blocks:
+        if block.content not in last.content:
             raise RenderContractError("the request block was not rendered verbatim")
-        if request.messages[target].role != "user":
-            raise RenderContractError("the request block must be the final user turn")
+        if block.content not in outside:
+            raise RenderContractError("the request block was merged into a data fence")
+        if escape(block.content) != block.content and escape(block.content) in outside:
+            raise RenderContractError("the request block was escaped")
+
+
+def _excise(text: str, spans: list[tuple[int, int]]) -> str:
+    """Remove the given character spans, so what remains is genuinely outside them."""
+    if not spans:
+        return text
+    kept: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        if start >= cursor:
+            kept.append(text[cursor:start])
+            cursor = end
+    kept.append(text[cursor:])
+    return "".join(kept)
