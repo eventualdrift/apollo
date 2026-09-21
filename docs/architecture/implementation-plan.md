@@ -102,6 +102,14 @@ Strategies (pinned, lexical, recency), merge and ranking, `origin`/mode scoping,
 `correct_empty_rate`. `MEMORY` and `RETRIEVAL_NOTICE` blocks wired into the compiler.
 **Run the suite under both `english` and `simple` text-search configurations and keep the better one,
 recording the result** (§E.4).
+
+**Carried into this step from the M1 review (P2-NEW-1, deferred).** `_verify_no_data_in_policy` in
+`brains/base.py` tests for a data block's content appearing in the policy region by substring. That
+is sound while no MEMORY blocks are rendered, but a very short memory claim whose text also occurs
+in the identity would false-positive once retrieval is live. This step is the first time real MEMORY
+blocks reach a rendered request, so the question must be settled here — most likely by matching the
+rendered fence for a block rather than its bare content. **Do not enable memory rendering without
+resolving it.**
 *Satisfies: O.1/2, O.1/7, O.1/8, O.1/20 (third mechanism), O.1/24.*
 
 ### Step 12. Memory proposals

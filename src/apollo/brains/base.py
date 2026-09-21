@@ -260,7 +260,15 @@ def _verify_policy_blocks_present(bundle: ContextBundle, policy_text: str) -> No
 
 
 def _verify_no_data_in_policy(bundle: ContextBundle, policy_text: str) -> None:
-    """No data block may appear in the policy region, in any form."""
+    """No data block may appear in the policy region, in any form.
+
+    Known limitation, deferred deliberately: this is a substring test, so a very
+    short future MEMORY block whose content also occurs inside the identity text
+    — a claim that is literally "Apollo", say — would false-positive. M1 renders
+    no MEMORY blocks in normal operation, and the right fix depends on what real
+    memory rendering looks like, so it is revisited at step 11 rather than
+    guessed at now. See docs/architecture/implementation-plan.md, step 11.
+    """
     for block in bundle.blocks_in(Region.DATA):
         if not block.content.strip():
             continue
@@ -296,10 +304,13 @@ def _verify_data_is_fenced_and_escaped(
 def _data_fence_spans(bundle: ContextBundle, text: str) -> list[tuple[int, int]]:
     """Character spans in `text` occupied by a fence carrying a real data block.
 
-    Only these spans count as "fenced" when checking the request. Fence-shaped
-    text a *user* typed into their own message is rendered verbatim by design
-    and is not the adapter merging the request into a data block, which is the
-    violation this guards against.
+    These are the only spans that count as "fenced" when locating a request or a
+    history block. The distinction is provenance, not syntax: a fence has
+    structural meaning only when it actually carries a `data` block from this
+    bundle. Fence-shaped bytes that came from a message — because Janu typed
+    them, or because Apollo quoted them back — are ordinary dialogue rendered
+    verbatim, and treating them as structure is what bricked conversations that
+    contained one.
     """
     spans: list[tuple[int, int]] = []
     for block in bundle.blocks_in(Region.DATA):
@@ -324,16 +335,26 @@ def _data_fence_spans(bundle: ContextBundle, text: str) -> list[tuple[int, int]]
 def _verify_history_roles(
     bundle: ContextBundle, non_policy: list[tuple[int, RenderedMessage]]
 ) -> None:
-    """Prior turns keep their conversational roles and are not fenced away."""
+    """Prior turns keep their conversational roles and are not swallowed by a data fence.
+
+    History content may be anything a person or Apollo said, including prose
+    that looks exactly like a compiler fence. So the check asks the same
+    question `_verify_request` asks: is the block present outside the spans
+    occupied by *real* data blocks? Parsing history with generic fence syntax
+    would let a message's own bytes hide it from the verifier, which is a
+    continuity defect rather than a security one — every later turn in that
+    conversation fails until the message ages out of the window.
+    """
     for block in bundle.blocks_in(Region.HISTORY):
         expected = "assistant" if block.role == "apollo" else "user"
         if not any(
-            m.role == expected and block.content in parse_fences(m.content)[1]
+            m.role == expected
+            and block.content in _excise(m.content, _data_fence_spans(bundle, m.content))
             for _, m in non_policy
         ):
             raise RenderContractError(
-                f"history block {block.source_ref} was not rendered unfenced "
-                f"as a {expected} turn"
+                f"history block {block.source_ref} was not rendered outside the data "
+                f"fences as a {expected} turn"
             )
 
 

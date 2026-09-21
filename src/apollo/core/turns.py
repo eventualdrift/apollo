@@ -54,9 +54,58 @@ log = logging.getLogger(__name__)
 #: looks acceptable hides a real problem (spec L).
 MAX_TRANSPORT_RETRIES = 1
 
-SYSTEM_NOTE_UNAVAILABLE = (
-    "Apollo could not reach its model. No response was generated for that message."
+#: The durable, human-visible note written into the transcript when a turn
+#: fails. Keyed on the closed `ErrorKind` enum, so the note states the failure
+#: *category* truthfully: saying the model was unreachable when Core failed
+#: before ever calling it would be a lie in the one record Janu reads.
+#:
+#: Every string here is a fixed constant. Nothing derived from an exception, a
+#: provider response or the conversation reaches the transcript (spec H.5).
+SYSTEM_NOTES: dict[ErrorKind, str] = {
+    ErrorKind.BRAIN_UNAVAILABLE: (
+        "Apollo could not reach its model. No response was generated for that message."
+    ),
+    ErrorKind.EMPTY_GENERATION: (
+        "Apollo's model returned nothing. No response was generated for that message."
+    ),
+    ErrorKind.CONTEXT_OVERFLOW: (
+        "This conversation no longer fits in Apollo's context window. "
+        "No response was generated for that message."
+    ),
+    ErrorKind.IDENTITY_OVERFLOW: (
+        "Apollo could not assemble its own identity for this turn. "
+        "No response was generated for that message."
+    ),
+    ErrorKind.BRAIN_MODE_NOT_PERMITTED: (
+        "Apollo refused this turn: the configured model is not permitted for this "
+        "conversation. No response was generated for that message."
+    ),
+    ErrorKind.BRAIN_NOT_INTERACTIVE: (
+        "Apollo refused this turn: the configured model is an evaluation-only surface "
+        "and cannot be used interactively. No response was generated for that message."
+    ),
+    ErrorKind.RETRIEVAL_FAILED: (
+        "Apollo could not search its memory for this turn. "
+        "No response was generated for that message."
+    ),
+    ErrorKind.INTERRUPTED: (
+        "This turn was interrupted before it completed. "
+        "No response was generated for that message."
+    ),
+}
+
+#: Anything else — a render-contract violation, a bug, an unmapped failure —
+#: gets the neutral truthful note. It does not claim the model was reachable or
+#: unreachable, because at that point Core does not know.
+SYSTEM_NOTE_INTERNAL = (
+    "Apollo could not complete this turn because of an internal processing error. "
+    "No response was generated for that message."
 )
+
+
+def system_note_for(kind: ErrorKind) -> str:
+    """The truthful note for a failure category. Total, and never derived from input."""
+    return SYSTEM_NOTES.get(kind, SYSTEM_NOTE_INTERNAL)
 
 
 @dataclass(frozen=True)
@@ -231,7 +280,7 @@ class TurnService:
             )
         except PolicyRefusedError as exc:
             self._record_policy_refusal(conversation_id, turn_id, exc)
-            return self._fail_turn(conversation_id, turn_id, exc, turn_started, note=str(exc.kind))
+            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
         except ApolloError as exc:
             return self._fail_turn(conversation_id, turn_id, exc, turn_started)
 
@@ -250,7 +299,6 @@ class TurnService:
                 turn_id,
                 outcome.error,
                 turn_started,
-                note=SYSTEM_NOTE_UNAVAILABLE,
                 invocation_ids=attempts,
             )
 
@@ -385,12 +433,12 @@ class TurnService:
         exc: BaseException,
         turn_started: float,
         *,
-        note: str | None = None,
         invocation_ids: tuple[uuid.UUID, ...] = (),
     ) -> TurnResult:
         now = self._clock()
         latency = max(1, int((time.monotonic() - turn_started) * 1000))
         kind = error_kind(exc)
+        note = system_note_for(kind)
         with unit_of_work(self._db) as uow:
             TurnRepository(uow).fail(
                 turn_id=turn_id,
