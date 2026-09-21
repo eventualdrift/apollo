@@ -2,8 +2,9 @@
 
 Three modes: `echo` (fixed transformation, plumbing tests), `scripted`
 (responses from a case file), and `replay` (a recorded generation keyed by
-bundle hash). Replay's lookup is implemented here because it is three lines;
-the recording subsystem that populates it belongs to step 9 and is not built.
+bundle hash). Replay reads the recording format `evals/recordings.py` writes,
+but does not import it: an adapter reads files, it does not depend on the
+evaluation subsystem.
 
 The fake renders through the same `render_chat` path as a real adapter, so the
 region contract is exercised rather than bypassed.
@@ -120,13 +121,21 @@ class FakeBrain:
         return f"[fake:echo {digest}] {request_line}"
 
     def _replay(self, prompt_hash: str) -> str:
+        """Match on the *rendered* prompt hash, not the file name.
+
+        Recordings are filed under `bundle_hash` because that identifies the
+        question Apollo compiled. Replay matches on the rendered hash because
+        that identifies the bytes the model was sent: after a `render_version`
+        change the same bundle renders differently, and an answer recorded for
+        the old bytes is not an answer to the new ones.
+        """
         if self._replay_dir is None:
             raise FakeBrainError("replay mode requires a replay directory")
-        path = self._replay_dir / f"{prompt_hash}.json"
-        if not path.exists():
-            raise FakeBrainError("no recording for this prompt hash")
-        data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-        return str(data["text"])
+        for path in sorted(self._replay_dir.glob("*.json")):
+            data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+            if data.get("rendered_prompt_hash") == prompt_hash:
+                return str(data["generation"]["text"])
+        raise FakeBrainError("no recording for this rendered prompt hash")
 
 
 def data_and_request_text(bundle: ContextBundle) -> str:

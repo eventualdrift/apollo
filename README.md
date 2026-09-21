@@ -10,6 +10,15 @@ and the [ADRs](docs/adr/). The specification wins over the code; if they disagre
 Apollo holds a text conversation against `brain.fake`, and every turn and model invocation is
 durably recorded. No real model, no memory, no retrieval — those arrive in later milestones.
 
+## Milestone 2
+
+Real models can be bound (any OpenAI-compatible endpoint), and Apollo's behaviour under a model
+change is measurable: the persona regression suite, its check engine, run records, `eval diff` and
+the two compatibility gates. See [`docs/operations/persona-eval.md`](docs/operations/persona-eval.md).
+
+Gate 1 is mechanical and runs today. **Gate 2 is empirical and needs a real model**: a run against
+`brain.fake` exercises the machinery and says nothing about Apollo's behaviour.
+
 ## Two database roles
 
 Apollo runs as a least-privilege role that **cannot modify the audit stream**. That is a load-bearing

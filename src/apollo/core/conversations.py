@@ -7,14 +7,32 @@ from datetime import datetime
 from typing import Any
 
 from apollo.audit.events import Actor, AuditEvent, EventType
-from apollo.config import MODE_PERSONAL
+from apollo.config import MODE_BENCHMARK, MODE_PERSONAL
 from apollo.storage.db import Database
 from apollo.storage.repositories import ConversationRepository, MessageRepository
 from apollo.storage.unit_of_work import unit_of_work
 
 
 def create_conversation(
-    db: Database, *, now: datetime, title: str | None = None, mode: str = MODE_PERSONAL
+    db: Database, *, now: datetime, title: str | None = None
+) -> uuid.UUID:
+    """The interactive surface. It creates `personal` conversations and nothing else.
+
+    There is deliberately no `mode` parameter: benchmark conversations exist
+    only on the eval path (spec K.2), and a parameter is an invitation.
+    """
+    return _create(db, now=now, title=title, mode=MODE_PERSONAL)
+
+
+def create_benchmark_conversation(
+    db: Database, *, now: datetime, title: str | None = None
+) -> uuid.UUID:
+    """The eval path's conversation factory. Not reachable from the CLI or API."""
+    return _create(db, now=now, title=title, mode=MODE_BENCHMARK)
+
+
+def _create(
+    db: Database, *, now: datetime, title: str | None, mode: str
 ) -> uuid.UUID:
     with unit_of_work(db) as uow:
         conversation_id = ConversationRepository(uow).create(mode=mode, now=now, title=title)

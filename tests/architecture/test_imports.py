@@ -30,7 +30,16 @@ ALLOWED: dict[str, frozenset[str]] = {
     "audit": frozenset({"storage", "errors", "logging_setup"}),
     "storage": frozenset({"errors", "logging_setup", "config"}),
     "api": frozenset({"core", "config", "errors", "logging_setup"}),
-    "cli": frozenset({"core", "config", "errors", "logging_setup", "context", "brains", "storage"}),
+    "cli": frozenset(
+        {"core", "config", "errors", "logging_setup", "context", "brains", "storage", "evals"}
+    ),
+    # The eval subsystem drives a real turn through the real invocation path,
+    # so it depends on everything a turn depends on. It is still a caller:
+    # nothing in Apollo imports `evals/`.
+    "evals": frozenset(
+        {"core", "context", "brains", "audit", "storage", "config", "errors",
+         "sanitise", "logging_setup"}
+    ),
 }
 
 # Modules that are pure leaf utilities and may be imported by anything.
@@ -104,4 +113,20 @@ def test_brains_do_not_touch_a_database_driver() -> None:
         for driver in ("psycopg", "sqlite3", "sqlalchemy"):
             if f"import {driver}" in text:
                 offenders.append(f"{path.name} imports {driver}")
+    assert not offenders, "; ".join(offenders)
+
+
+def test_nothing_depends_on_the_eval_subsystem() -> None:
+    """`evals/` is a caller, never a dependency.
+
+    The suite measures Apollo; Apollo must not be built out of it. A module
+    importing `evals/` would let a fixture change behaviour in production.
+    """
+    offenders = []
+    for module, path in _modules():
+        if _package_of(module) in {"evals", "cli"}:
+            continue
+        for imported in _apollo_imports(path):
+            if _package_of(imported) == "evals":
+                offenders.append(f"{module} -> apollo.{imported}")
     assert not offenders, "; ".join(offenders)

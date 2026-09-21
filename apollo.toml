@@ -26,6 +26,12 @@ reserved_output = 1024
 # choice: any OpenAI-compatible endpoint (vLLM, SGLang, Ollama, another
 # machine) works by editing base_url and model. Core knows none of them.
 #
+# Binding it takes two edits: the alias below, and the provider block.
+# docs/operations/persona-eval.md has the full procedure.
+#
+# [brains]
+# local = "local"
+#
 # [providers.local]
 # kind = "openai_compatible"
 # base_url = "http://127.0.0.1:8080/v1"
@@ -41,6 +47,8 @@ reserved_output = 1024
 #
 # api_key_env names the ENVIRONMENT VARIABLE, never the key itself: a key in a
 # committed file is a key in git history for ever.
+#
+# The alias already exists above; uncommenting this block completes it.
 #
 # [providers.reference]
 # kind = "openai_compatible"
