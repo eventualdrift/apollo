@@ -42,6 +42,16 @@ class ContextOverflowError(ApolloError):
     kind = ErrorKind.CONTEXT_OVERFLOW
 
 
+class HistoryRoleError(ApolloError):
+    """A history item carried a role that may never become conversation history.
+
+    `system_note` rows are durable, human-visible transcript entries and are
+    never model context (spec F.2). The repository filters them out; this is
+    the second layer, for callers that build context without going through that
+    query — the eval runner, replay, and whatever Core grows next.
+    """
+
+
 class PolicyRefusedError(ApolloError):
     """Raised by core.policy before retrieval or generation. Never a silent downgrade."""
 

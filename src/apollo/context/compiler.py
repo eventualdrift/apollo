@@ -39,8 +39,15 @@ from apollo.context.bundle import (
 from apollo.context.estimator import TokenEstimator
 from apollo.context.rules import COMPILER_VERSION, CONTEXT_RULES, PROPOSAL_RULES
 from apollo.core.identity import Identity
+from apollo.errors import HistoryRoleError
 
 log = logging.getLogger(__name__)
+
+#: The only roles that may appear in CONVERSATION_RECENT (spec F.2). This is
+#: deliberately not a mapping: an unknown role is rejected, never coerced into
+#: the nearest conversational one, and `system_note` has no model-facing role to
+#: be mapped to.
+CONVERSATIONAL_ROLES = frozenset({"user", "apollo"})
 
 #: Emitted on every turn. A block that appears only on failure is a block the
 #: model learns to read as an alarm (spec E.3).
@@ -74,9 +81,26 @@ class CompileRequest:
 
 
 def compile_context(request: CompileRequest) -> ContextBundle:
+    _validate_history_roles(request.history)
     if request.purpose is Purpose.REPLY:
         return _compile_reply(request)
     return _compile_memory_proposal(request)
+
+
+def _validate_history_roles(history: tuple[HistoryMessage, ...]) -> None:
+    """Fail loudly rather than misattributing a message to Janu or to Apollo.
+
+    Silently dropping an unknown role would hide a caller's bug; silently
+    mapping `system_note` to `user` would put Core's own words in Janu's mouth
+    and give them conversational weight they were never meant to carry.
+    """
+    for item in history:
+        if item.role not in CONVERSATIONAL_ROLES:
+            raise HistoryRoleError(
+                f"history message {item.message_id} has role {item.role!r}; "
+                f"CONVERSATION_RECENT admits only {sorted(CONVERSATIONAL_ROLES)}. "
+                "System notes are transcript entries and never model context."
+            )
 
 
 def _compile_reply(req: CompileRequest) -> ContextBundle:

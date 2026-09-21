@@ -176,3 +176,68 @@ def test_identity_block_carries_the_identity_hash_as_its_source_ref() -> None:
     bundle = compile_context(make(identity=ident))
     assert bundle.blocks[0].source_ref == ident.content_hash
     assert bundle.identity_hash == ident.content_hash
+
+
+# ---------------------------------------------------------------------------
+# P2-2: the compiler validates history roles itself.
+#
+# `MessageRepository.history()` filters to user/apollo, which keeps ordinary
+# chat safe. But the compiler trusts what it is handed, and the eval runner,
+# replay and future Core callers may build history without that query. So the
+# compiler is defence layer two, and it fails loudly rather than misattributing.
+# ---------------------------------------------------------------------------
+
+
+def test_a_system_note_supplied_directly_is_rejected() -> None:
+    from apollo.errors import HistoryRoleError
+
+    history = [
+        HistoryMessage("m1", "user", "a real question"),
+        HistoryMessage("m2", "system_note", "Apollo could not reach its model."),
+    ]
+    with pytest.raises(HistoryRoleError, match="system_note"):
+        compile_context(make(history=history))
+
+
+def test_an_unknown_role_is_rejected_rather_than_dropped() -> None:
+    from apollo.errors import HistoryRoleError
+
+    with pytest.raises(HistoryRoleError, match="'tool'"):
+        compile_context(make(history=[HistoryMessage("m1", "tool", "tool output")]))
+
+
+def test_the_error_names_the_offending_message() -> None:
+    from apollo.errors import HistoryRoleError
+
+    with pytest.raises(HistoryRoleError, match="m-offending"):
+        compile_context(make(history=[HistoryMessage("m-offending", "system_note", "x")]))
+
+
+def test_a_system_note_is_never_silently_coerced_to_a_user_turn() -> None:
+    """The failure mode this guards: Core's words attributed to Janu."""
+    from apollo.errors import HistoryRoleError
+
+    note = "Apollo could not reach its model."
+    try:
+        compile_context(make(history=[HistoryMessage("m1", "system_note", note)]))
+    except HistoryRoleError:
+        pass
+    else:  # pragma: no cover - the assertion is the point
+        pytest.fail("a system_note was accepted into conversation history")
+
+    # And the legitimate path is unaffected.
+    bundle = compile_context(make(history=[HistoryMessage("m1", "user", note)]))
+    assert [b.role for b in bundle.blocks_in(Region.HISTORY)] == ["user"]
+
+
+def test_ordinary_history_still_compiles_identically() -> None:
+    """The new check must not change a single byte of a legitimate bundle."""
+    history = [HistoryMessage("m1", "user", "first"), HistoryMessage("m2", "apollo", "second")]
+    before = compile_context(make(history=history))
+    after = compile_context(make(history=history))
+    assert before.bundle_hash == after.bundle_hash
+    assert [b.role for b in before.blocks_in(Region.HISTORY)] == ["user", "apollo"]
+
+
+def test_empty_history_is_fine() -> None:
+    compile_context(make(history=[]))  # must not raise
