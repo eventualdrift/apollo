@@ -4,6 +4,7 @@ A private, persistent personal AI. Phase zero.
 
 Architecture is frozen: see [`docs/architecture/phase-zero-spec.md`](docs/architecture/phase-zero-spec.md)
 and the [ADRs](docs/adr/). The specification wins over the code; if they disagree, the code is wrong.
+Current implementation continuity is recorded in [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md).
 
 ## Milestone 1
 

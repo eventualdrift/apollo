@@ -1,13 +1,9 @@
 """Gate 1 — protocol compatibility (spec G.5).
 
-Mechanical checks a brain must pass before it may be bound to `brain.default`.
-Passing Gate 1 means Apollo can *technically* use the model. It says nothing
-about whether Apollo still behaves like Apollo through it — that is Gate 2, and
-it is empirical.
-
-This harness deliberately does not call the provider. A model that cannot be
-reached is a deployment problem; a model whose adapter renders illegally is an
-architecture problem, and only the second is Gate 1's business.
+Pure checks that form the static portion of Gate 1. Database-aware generation
+orchestration lives in `evals/gate1.py`, preserving the rule that adapters do
+not import Core or storage. A static-only report can never claim a full Gate 1
+pass: spec G.5 also requires a successful, well-formed Generation.
 """
 
 from __future__ import annotations
@@ -25,13 +21,23 @@ class Gate1Report:
     adapter_key: str
     render_version: str
     checks: list[tuple[str, bool, str]] = field(default_factory=list)
+    generation_probe_passed: bool | None = None
+    generation_probe_detail: str = ""
 
     def record(self, name: str, passed: bool, detail: str = "") -> None:
         self.checks.append((name, passed, detail))
 
     @property
+    def static_passed(self) -> bool:
+        return bool(self.checks) and all(passed for _, passed, _ in self.checks)
+
+    def record_generation_probe(self, passed: bool, detail: str = "") -> None:
+        self.generation_probe_passed = passed
+        self.generation_probe_detail = detail
+
+    @property
     def passed(self) -> bool:
-        return all(passed for _, passed, _ in self.checks)
+        return self.static_passed and self.generation_probe_passed is True
 
     def as_lines(self) -> list[str]:
         lines = [
@@ -43,6 +49,12 @@ class Gate1Report:
         for name, passed, detail in self.checks:
             mark = "PASS" if passed else "FAIL"
             lines.append(f"  {mark}  {name}" + (f" — {detail}" if detail else ""))
+        if self.generation_probe_passed is None:
+            lines.append("  NOT RUN  recorded generation probe")
+        else:
+            mark = "PASS" if self.generation_probe_passed else "FAIL"
+            detail = f" — {self.generation_probe_detail}" if self.generation_probe_detail else ""
+            lines.append(f"  {mark}  recorded generation probe{detail}")
         lines.append("")
         lines.append(f"Gate 1: {'PASS' if self.passed else 'FAIL'}")
         return lines
@@ -53,7 +65,11 @@ def run_gate1(
     provider: ProviderConfig,
     bundles: list[ContextBundle],
 ) -> Gate1Report:
-    """Run the mechanical checks. `bundles` must include a delimiter-collision case."""
+    """Run static checks. `bundles` must include a delimiter-collision case.
+
+    The returned report is not a full Gate 1 pass until the recorded probe
+    orchestrator calls `record_generation_probe(True, ...)`.
+    """
     report = Gate1Report(
         brain_key=getattr(brain, "key", "?"),
         adapter_key=brain.adapter_key,
@@ -69,8 +85,9 @@ def run_gate1(
         bool(provider.allowed_modes),
         ", ".join(provider.allowed_modes),
     )
-    report.record("declares eval_only", isinstance(provider.eval_only, bool),
-                  str(provider.eval_only))
+    report.record(
+        "declares eval_only", isinstance(provider.eval_only, bool), str(provider.eval_only)
+    )
     report.record(
         "surface rule is total",
         all(isinstance(provider.resolvable_from(s), bool) for s in SURFACES),

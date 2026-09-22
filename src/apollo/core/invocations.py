@@ -21,11 +21,23 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from apollo.audit.events import Actor, AuditEvent, EventType
-from apollo.brains.base import Brain, Generation, GenerationParams
+from apollo.brains.base import (
+    Brain,
+    Generation,
+    GenerationParams,
+    RenderedRequest,
+    verify_region_contract,
+)
 from apollo.context.bundle import ContextBundle
-from apollo.errors import EmptyGenerationError, ErrorKind, InvocationContractError
+from apollo.errors import (
+    EmptyGenerationError,
+    ErrorKind,
+    GenerationContractError,
+    InvocationContractError,
+)
 from apollo.sanitise import error_detail, error_kind, whitelist_meta
 from apollo.storage.db import Database, assert_no_open_transaction
 from apollo.storage.repositories import InvocationRepository
@@ -138,12 +150,16 @@ def invoke(
 
     started = time.monotonic()
     generation: Generation | None = None
+    meta: dict[str, Any] = {}
     error: BaseException | None = None
     try:
         request = brain.render(bundle)
-        generation = brain.generate(request, params)
-        if not generation.text.strip():
-            raise EmptyGenerationError("provider returned no text")
+        verify_region_contract(bundle, request)
+        generation = _validate_generation(brain.generate(request, params), request)
+        # Validate and reduce provider metadata while still inside the guarded
+        # adapter-result path. A malformed raw_meta must become a recorded
+        # invocation failure, not escape later and leave the row started.
+        meta = whitelist_meta(generation.raw_meta)
     except BaseException as exc:  # noqa: BLE001 - mapped by type, never by text
         error = exc
 
@@ -153,7 +169,6 @@ def invoke(
     with unit_of_work(db) as uow:
         repo = InvocationRepository(uow)
         if generation is not None and error is None:
-            meta = whitelist_meta(generation.raw_meta)
             repo.complete(
                 invocation_id=invocation_id,
                 now=now,
@@ -231,3 +246,38 @@ def invoke(
         },
     )
     return InvocationOutcome(invocation_id=invocation_id, generation=generation, error=error)
+
+
+def _validate_generation(value: object, request: RenderedRequest) -> Generation:
+    """Validate the provider result before any field is persisted.
+
+    `Brain` is a structural protocol, so Python cannot enforce its return type
+    at runtime. Gate 1 requires a well-formed Generation, and every invocation
+    benefits from rejecting malformed adapter output through the same recorded
+    failure path.
+    """
+    if not isinstance(value, Generation):
+        raise GenerationContractError("brain did not return Generation")
+    if not isinstance(value.text, str):
+        raise GenerationContractError("generation text is not a string")
+    if not value.text.strip():
+        raise EmptyGenerationError("provider returned no text")
+    if not isinstance(value.model_identifier, str) or not value.model_identifier.strip():
+        raise GenerationContractError("generation model identifier is missing")
+    if not isinstance(value.finish_reason, str) or not value.finish_reason.strip():
+        raise GenerationContractError("generation finish reason is missing")
+    if not _nonnegative_int(value.latency_ms):
+        raise GenerationContractError("generation latency is invalid")
+    if value.rendered_prompt_hash != request.prompt_hash:
+        raise GenerationContractError("generation rendered prompt hash does not match request")
+    for name in ("prompt_tokens", "completion_tokens", "reasoning_tokens"):
+        count = getattr(value, name)
+        if count is not None and not _nonnegative_int(count):
+            raise GenerationContractError(f"generation {name} is invalid")
+    if not isinstance(value.raw_meta, dict):
+        raise GenerationContractError("generation raw_meta is not a mapping")
+    return value
+
+
+def _nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0

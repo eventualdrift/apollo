@@ -85,5 +85,9 @@ class EmptyGenerationError(ApolloError):
     kind = ErrorKind.EMPTY_GENERATION
 
 
+class GenerationContractError(ApolloError):
+    """A Brain returned a value that does not satisfy the Generation contract."""
+
+
 class InvocationContractError(ApolloError):
     """Raised when something tries to call a Brain outside the recorded path (ADR-0013)."""

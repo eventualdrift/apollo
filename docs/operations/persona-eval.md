@@ -59,9 +59,14 @@ A brain with no run is reported `NOT RUN`, never `PASS`.
 ## The gates
 
 ```sh
-apollo gate1 brain.local                    # protocol compatibility, mechanical
+apollo gate1 brain.local                    # protocol compatibility, including one generation
 apollo eval gate2 evals/runs/<run>.json     # behavioural compatibility, empirical
 ```
+
+Gate 1 runs its static protocol and rendering checks first. Only when they pass, it creates a
+benchmark conversation and makes one generation attempt through Apollo's recorded invocation path.
+The configured runtime database must therefore be available. Provider failure, malformed generation
+output or failure to record the probe makes the gate fail; there is no retry or fallback.
 
 Gate 2 passes only when a run exists at the current identity hash, bundle equality holds, and every
 deterministic check passes **or** carries an explicit waiver. Waivers live in
@@ -97,7 +102,7 @@ eval_only = false
 Then:
 
 ```sh
-apollo gate1 brain.local                  # protocol first
+apollo gate1 brain.local                  # protocol plus one recorded generation
 apollo eval run --brain brain.local       # then behaviour
 apollo eval diff <fake-run>.json <local-run>.json
 apollo eval gate2 <local-run>.json
