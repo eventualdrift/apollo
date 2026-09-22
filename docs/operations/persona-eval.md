@@ -33,6 +33,12 @@ Each run writes `evals/runs/<timestamp>-<brain>-<identity_hash[:8]>.json`, which
 contains model output verbatim. A run record carries everything needed to understand a behavioural
 change months later — the fixture input, the visible response, every check result, the bundle hash,
 the identity hash and version, the compiler version, the estimator, and the generation parameters.
+Version 2 additionally records the complete semantic case definitions/check configuration, corpus
+hash, context budget inputs, offline/provider provenance classification, and each generation's
+rendered-prompt hash and finish reason. Acceptance reconstructs contexts with the existing compiler
+and reruns the existing deterministic checks over the saved visible answers; it makes no model call.
+Version-1 and partial runs remain diagnostic evidence, not acceptance-ready artifacts. Do not
+backfill missing provenance or approval fields into old empirical records to make them pass.
 
 It carries none of: hidden reasoning text, provider secrets, raw provider bodies, `Authorization`
 headers, personal memory, or personal conversation history. That is asserted with sentinels in
@@ -60,7 +66,7 @@ A brain with no run is reported `NOT RUN`, never `PASS`.
 
 ```sh
 apollo gate1 brain.local                    # protocol compatibility, including one generation
-apollo eval gate2 evals/runs/<run>.json     # behavioural compatibility, empirical
+apollo eval gate2 evals/runs/<run>.json      # diagnostic only: no incumbent/review means nonzero
 ```
 
 Gate 1 runs its static protocol and rendering checks first. Only when they pass, it creates a
@@ -68,11 +74,92 @@ benchmark conversation and makes one generation attempt through Apollo's recorde
 The configured runtime database must therefore be available. Provider failure, malformed generation
 output or failure to record the probe makes the gate fail; there is no retry or fallback.
 
-Gate 2 passes only when a run exists at the current identity hash, bundle equality holds, and every
-deterministic check passes **or** carries an explicit waiver. Waivers live in
-`evals/persona/waivers.yaml` and must name the case, the date, the brain, the identity hash and a
-written reason. Nothing generates a waiver reason; a waiver is a person saying they looked at the
-change and accept it.
+Gate 2 replacement acceptance requires all of the following (spec G.5, J, O.1; ADR-0012):
+
+- Complete current repository corpus and sample structure for **both** runs: one sample per
+  deterministic-only case, three per case with a manual check. Counts come from the case definitions,
+  not a fixed case total. Missing/extra/duplicate cases, samples, checks or manual observations fail.
+- Current identity version/hash, case definitions and check settings, compiler version and the common
+  `conservative-v1` estimator. Every sample must have completed; no supplied overall PASS is trusted.
+- An explicitly supplied, distinct incumbent, with a prior replacement-acceptance receipt bound to
+  that incumbent artifact. Two arbitrary run files do not authorise a baseline. Reused invocation,
+  turn or conversation evidence is rejected. Known fake/offline/replay evidence cannot qualify.
+- Equal generation parameters and per-case compiled bundle hashes. Provider, model, adapter,
+  renderer and capacity may differ; rendered-prompt hashes need not match across adapters. Capacity
+  differences are permissible only when the compiled inputs still match.
+- Every deterministic check passes, or its exact failure has a valid scoped human waiver.
+- The internally computed diff is explicitly reviewed. Every changed case, including response-only
+  changes, and every manual case (even unchanged) has a persisted case decision covering **all** its
+  samples and manual rubrics. Failed deterministic cases also require a deviation decision.
+
+Reports distinguish `candidate_valid`, `comparison_valid`, `incumbent_authorised`, `review_complete`,
+mechanical eligibility, and final acceptance. Exit 0 means the complete replacement gate passed;
+exit 1 means non-passing evidence; exit 2 means an input/output error. A completed run alone is not
+acceptance. `diff` and `replaceability` remain inspection tools, not approval mechanisms.
+
+### Review workflow (once an authorised incumbent exists)
+
+Run from the configured Apollo checkout. Gate 2 itself uses no database or provider, although the
+shared CLI configuration loader still requires its usual environment settings. Keep these artifacts
+in private scratch storage or the ignored `evals/runs/` directory, not in source control.
+
+```sh
+# Writes a NEW template with all reviewer/decision fields null; returns nonzero while pending.
+apollo eval gate2 candidate.json --incumbent incumbent.json \
+  --incumbent-acceptance incumbent-acceptance.json --review-template review.json --json
+
+# Optional readable inspection; the gate computes this diff itself as well.
+apollo eval diff incumbent.json candidate.json
+
+# After a HUMAN has read both runs, every required sample/rubric and the computed diff,
+# and completed review.json (never have an assistant invent approvals):
+apollo eval gate2 candidate.json --incumbent incumbent.json \
+  --incumbent-acceptance incumbent-acceptance.json --review review.json \
+  --write-acceptance candidate-acceptance.json --json
+```
+
+Templates and receipts are created exclusively: existing files are never overwritten. A receipt is
+written only on PASS. Missing or invalid comparable run evidence cannot produce a review template.
+Use new filenames when material changes; old review decisions do not carry forward automatically.
+
+The version-1 review contains run IDs and canonical SHA-256 hashes of **both entire run documents**,
+identity/corpus hashes, computed comparison hash, waiver-list hash and prior incumbent receipt hash.
+Canonical JSON uses sorted keys, compact separators, Unicode and finite numbers: whitespace and
+object-key ordering alone do not alter the evidence; changes to document values do. Duplicate JSON
+keys are rejected. Requirements list change reasons, all sample indexes (one-based) and manual
+rubrics/check indexes (zero-based). The human supplies `reviewer`, ISO `review_date`, `diff_reviewed:
+true`, and one `accept`, `waive` or `reject` decision per required case, with an ISO `date`.
+Pending/rejected, missing, duplicate, stale or out-of-scope decisions fail. Dates cannot be in the
+future or after the overall review date.
+
+`accept` says the behaviour meets the contract; `waive` acknowledges a deviation and additionally
+requires an explicit written `reason` (at least 12 characters). For deterministic failures, also
+explicitly supply `--waivers waivers.yaml` on **both** template and final commands. This extends the
+existing `waivers:` list: each entry requires case/date/reason/brain/identity, exact
+`model_identifier`, `candidate_hash`, `incumbent_hash`, `sample_indexes` and `check_indexes`.
+Every scoped sample must have exactly those failing checks; extra, stale, overlapping or conflicting
+waivers fail. Legacy broadly scoped waivers cannot authorise acceptance. A case decision alone
+cannot waive a deterministic failure, and a deterministic waiver alone cannot complete human review.
+No waiver or decision is generated automatically; the repository's waiver file is not auto-selected.
+
+Hashes bind reviewed evidence, not authorship or truth. These are operator-trusted local artifacts,
+not signatures or remote attestations. Declared provenance, invocation metadata and consistency checks
+reject known replay/fake or reused evidence; they cannot prove that a deliberately forged file came
+from a live provider or that its reviewer name was supplied by a human. Operators must preserve the
+original run, invocation and review evidence and control who can write acceptance records.
+
+### First incumbent: unresolved policy, no bypass
+
+The frozen specification requires an incumbent comparison but defines no first-baseline procedure.
+The replacement receipt format records an already accepted replacement and references its prior
+incumbent receipt. This patch deliberately provides **no root receipt issuer** or first-run exception.
+No incumbent means no acceptance; fake runs and Run A are not promoted. Real acceptance therefore
+remains blocked until a separately approved first-baseline policy establishes an authorised starting
+point. A minimal proposal, not approval: require a complete current real-provider run, every required
+manual review, deterministic pass or explicitly scoped waivers, and a dated operator designation
+bound to that evidence, explicitly acknowledging the absence of an incumbent comparison. Its policy
+and representation need separate approval before implementation. Do not fabricate a replacement
+receipt to stand in for that decision.
 
 A run against `brain.fake` reports `infrastructure_only`, never `passed`: the offline brain proves
 the harness, not Apollo.
@@ -104,8 +191,7 @@ Then:
 ```sh
 apollo gate1 brain.local                  # protocol plus one recorded generation
 apollo eval run --brain brain.local       # then behaviour
-apollo eval diff <fake-run>.json <local-run>.json
-apollo eval gate2 <local-run>.json
+apollo eval gate2 <local-run>.json         # non-passing without the evidence described above
 ```
 
 `api_key_env` names the **environment variable**, never the key. A key in a committed file is a key

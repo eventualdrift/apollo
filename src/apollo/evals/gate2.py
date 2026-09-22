@@ -9,9 +9,9 @@ Three refusals are deliberate:
 
 * no pass-rate threshold. Inventing one before the first real run would be a
   guess dressed as a target (spec O.1 criterion 29).
-* no auto-generated waiver. A waiver is a human saying "this changed, I looked
-  at it, and I accept it" with a date and a reason. Code that writes its own
-  reason has removed the only thing a waiver contains.
+* no auto-generated waiver. A waiver acknowledges a specific deviation with
+  a human-supplied date and reason; it does not say the behaviour meets the
+  contract. Code cannot author that decision.
 * no behavioural claim for an offline brain. `brain.fake` proves the machinery,
   not Apollo — it is not intelligent, and a green fake run is evidence about
   the harness only.
@@ -27,12 +27,29 @@ from typing import Any
 
 import yaml
 
+from apollo.core.identity import Identity, IdentityLoader
 from apollo.errors import ApolloError
+from apollo.evals import review as review_module
+from apollo.evals.diff import diff_runs
+from apollo.evals.evidence import DEFAULT_CASES_DIR, document_hash, validate_run
+from apollo.evals.loader import load_cases
+from apollo.evals.models import PersonaCase
 
 #: Adapters that cannot constitute behavioural evidence about a real model.
 OFFLINE_ADAPTER_KEYS = frozenset({"fake"})
 
-WAIVER_FIELDS = {"case_id", "date", "reason", "brain_alias", "model_identifier", "identity_hash"}
+WAIVER_FIELDS = {
+    "case_id",
+    "date",
+    "reason",
+    "brain_alias",
+    "model_identifier",
+    "identity_hash",
+    "candidate_hash",
+    "incumbent_hash",
+    "sample_indexes",
+    "check_indexes",
+}
 #: A waiver reason is a sentence a person wrote. This is a floor against an
 #: empty or placeholder one, not a judgement of its quality.
 MIN_REASON_CHARS = 12
@@ -59,6 +76,10 @@ class Waiver:
     brain_alias: str
     identity_hash: str
     model_identifier: str | None = None
+    candidate_hash: str = ""
+    incumbent_hash: str = ""
+    sample_indexes: tuple[int, ...] = ()
+    check_indexes: tuple[int, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -68,6 +89,10 @@ class Waiver:
             "brain_alias": self.brain_alias,
             "model_identifier": self.model_identifier,
             "identity_hash": self.identity_hash,
+            "candidate_hash": self.candidate_hash,
+            "incumbent_hash": self.incumbent_hash,
+            "sample_indexes": list(self.sample_indexes),
+            "check_indexes": list(self.check_indexes),
         }
 
 
@@ -76,12 +101,14 @@ class DeterministicFailure:
     case_id: str
     sample_index: int
     failing_checks: tuple[str, ...]
+    check_indexes: tuple[int, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "case_id": self.case_id,
             "sample_index": self.sample_index,
             "failing_checks": list(self.failing_checks),
+            "check_indexes": list(self.check_indexes),
         }
 
 
@@ -140,6 +167,13 @@ class Gate2Report:
     case_count: int = 0
     sample_count: int = 0
     notes: tuple[str, ...] = field(default_factory=tuple)
+    candidate_valid: bool = False
+    comparison_valid: bool = False
+    incumbent_authorised: bool = False
+    review_complete: bool = False
+    comparison: dict[str, Any] | None = None
+    review_template: dict[str, Any] | None = None
+    acceptance_record: dict[str, Any] | None = None
 
     @property
     def passed(self) -> bool:
@@ -164,6 +198,13 @@ class Gate2Report:
             "case_count": self.case_count,
             "sample_count": self.sample_count,
             "notes": list(self.notes),
+            "candidate_valid": self.candidate_valid,
+            "comparison_valid": self.comparison_valid,
+            "incumbent_authorised": self.incumbent_authorised,
+            "review_complete": self.review_complete,
+            "comparison": self.comparison,
+            "review_template": self.review_template,
+            "acceptance_record": self.acceptance_record,
         }
 
     def as_lines(self) -> list[str]:
@@ -173,6 +214,10 @@ class Gate2Report:
             f"GATE 2:              {str(self.status).upper()}",
             f"cases/samples:       {self.case_count}/{self.sample_count}",
             f"identity hash:       {self.observed_identity_hash or '<none>'}",
+            f"candidate valid:     {self.candidate_valid}",
+            f"comparison valid:    {self.comparison_valid}",
+            f"incumbent authorised:{self.incumbent_authorised}",
+            f"review complete:     {self.review_complete}",
         ]
         if self.blocking:
             lines.append("blocking:")
@@ -185,7 +230,7 @@ class Gate2Report:
                     f"{', '.join(failure.failing_checks)}"
                 )
         if self.waived:
-            lines.append("waived (a human accepted these, with a date and a reason):")
+            lines.append("waived deviations (human-attributed records, with a date and reason):")
             for waived in self.waived:
                 lines.append(
                     f"  - {waived.failure.case_id} sample {waived.failure.sample_index} "
@@ -198,8 +243,9 @@ class Gate2Report:
         if self.manual_cases:
             total = sum(m.sample_count for m in self.manual_cases)
             lines.append(
-                f"manual cases awaiting human review: {len(self.manual_cases)} "
-                f"({total} samples). These are not graded."
+                f"manual cases: {len(self.manual_cases)} ({total} samples); "
+                f"review {'complete' if self.review_complete else 'pending'}. "
+                "These are not automatically graded."
             )
         lines += [f"note: {note}" for note in self.notes]
         return lines
@@ -224,43 +270,45 @@ def evaluate_gate2(
     *,
     identity_hash: str,
     waivers: tuple[Waiver, ...] = (),
+    identity: Identity | None = None,
+    cases: list[PersonaCase] | None = None,
+    incumbent: dict[str, Any] | None = None,
+    incumbent_acceptance: dict[str, Any] | None = None,
+    review: dict[str, Any] | None = None,
 ) -> Gate2Report:
-    """Evaluate one persona run against the Gate-2 conditions."""
+    """Replacement acceptance, never merely a green recorded subset.
+
+    `cases`/`identity` are trusted current repository inputs, not material read
+    from the submitted run. The CLI always loads the complete repository corpus.
+    """
     brain_alias = str(run.get("brain_alias", ""))
     adapter_key = str(run.get("adapter_key", ""))
     observed_identity = run.get("identity_hash")
-    cases = run.get("cases", [])
-
-    blocking: list[str] = []
-    notes: list[str] = []
-
-    if not cases:
-        blocking.append("the run contains no cases")
-
-    if observed_identity != identity_hash:
-        blocking.append(
-            f"identity hash mismatch: run has {observed_identity}, "
-            f"current identity is {identity_hash}"
-        )
-
-    samples = [sample for case in cases for sample in case.get("samples", [])]
-    run_completed = bool(samples) and all(s.get("status") == "completed" for s in samples)
-    if not run_completed:
-        failed = [s for s in samples if s.get("status") != "completed"]
-        blocking.append(f"{len(failed)} of {len(samples)} samples did not complete")
-
-    for case in cases:
-        if not case.get("bundle_hash_stable_across_samples", True):
-            blocking.append(
-                f"{case['case_id']}: bundle hash differed across samples "
-                f"({case.get('bundle_hashes_seen')})"
-            )
-        elif case.get("bundle_hash") is None and case.get("samples"):
-            blocking.append(f"{case['case_id']}: no bundle hash recorded")
-
-    failures = tuple(_failures(cases))
+    try:
+        candidate_hash = document_hash(run)
+        incumbent_hash = document_hash(incumbent) if incumbent is not None else ""
+    except (ValueError, TypeError):
+        report = not_run(brain_alias, "run evidence must be finite JSON data")
+        report.status = Gate2Status.FAILED
+        return report
+    expected_cases = cases if cases is not None else load_cases(DEFAULT_CASES_DIR)
+    current_identity = identity or IdentityLoader(DEFAULT_CASES_DIR.parents[2] / "identity").load()
+    evidence = validate_run(run, cases=expected_cases, identity=current_identity)
+    blocking = [f"candidate: {problem}" for problem in evidence.problems]
+    if identity_hash != current_identity.content_hash:
+        blocking.append("supplied current identity hash does not match repository identity")
+    candidate_valid = not blocking
+    entries = evidence.document["cases"] if evidence.document is not None else []
+    samples = [s for c in entries for s in c["samples"]]
+    failures = tuple(_failures(entries))
     waived, unwaived, rejected = _apply_waivers(
-        failures, waivers, brain_alias=brain_alias, identity_hash=identity_hash, cases=cases
+        failures,
+        waivers,
+        brain_alias=brain_alias,
+        identity_hash=identity_hash,
+        cases=entries,
+        candidate_hash=candidate_hash,
+        incumbent_hash=incumbent_hash,
     )
     for failure in unwaived:
         blocking.append(
@@ -268,46 +316,99 @@ def evaluate_gate2(
             f"{', '.join(failure.failing_checks)} failed with no waiver"
         )
 
-    manual_cases = tuple(_manual_cases(cases))
-    if manual_cases:
-        notes.append(
-            f"{len(manual_cases)} manual case(s) are recorded for human review and are "
-            "not part of the mechanical result"
-        )
-
-    mechanically_eligible = not blocking
-    real_model_evidence = adapter_key not in OFFLINE_ADAPTER_KEYS
-
-    if not cases:
-        status = Gate2Status.NOT_RUN
-    elif not mechanically_eligible:
-        status = Gate2Status.FAILED
-    elif not real_model_evidence:
-        status = Gate2Status.INFRASTRUCTURE_ONLY
-        notes.append(
-            f"adapter {adapter_key!r} is offline and deterministic: this run proves the "
-            "evaluation machinery, not Apollo's behaviour through a real model"
+    blocking.extend(f"waiver rejected: {r.reason}" for r in rejected)
+    mechanically_eligible = candidate_valid and not unwaived and not rejected
+    comparison = None
+    comparison_valid = False
+    incumbent_authorised = False
+    template = None
+    review_complete = False
+    if incumbent is None:
+        blocking.append(
+            "missing incumbent: replacement acceptance requires an explicit distinct run"
         )
     else:
-        status = Gate2Status.PASSED
+        incumbent_evidence = validate_run(
+            incumbent, cases=expected_cases, identity=current_identity
+        )
+        comparison_problems = [f"incumbent: {p}" for p in incumbent_evidence.problems]
+        if run.get("run_id") == incumbent.get("run_id") or candidate_hash == incumbent_hash:
+            comparison_problems.append("self-comparison is not replacement evidence")
+        if run.get("generation_params") != incumbent.get("generation_params"):
+            comparison_problems.append("generation parameters differ; comparison is incompatible")
+        if candidate_valid and incumbent_evidence.valid:
+            prior_samples = [s for c in incumbent["cases"] for s in c["samples"]]
+            if any(
+                {s[key] for s in samples} & {s[key] for s in prior_samples}
+                for key in ("invocation_id", "turn_id")
+            ) or (run["conversation_id"] == incumbent["conversation_id"]):
+                comparison_problems.append(
+                    "reused invocation/turn/conversation evidence across runs"
+                )
+            comparison = diff_runs(incumbent, run)
+            if not comparison.comparison_valid:
+                comparison_problems.append("per-case input bundle comparison is incompatible")
+        comparison_valid = candidate_valid and not comparison_problems
+        blocking.extend(comparison_problems)
+        auth_problems = review_module.incumbent_authorisation_problems(
+            incumbent_acceptance, incumbent
+        )
+        incumbent_authorised = not auth_problems
+        blocking.extend(auth_problems)
+        if comparison_valid and comparison is not None:
+            template = review_module.review_template(
+                run,
+                incumbent,
+                comparison,
+                expected_cases,
+                incumbent_acceptance=incumbent_acceptance,
+                waivers=[w.as_dict() for w in waivers],
+                failing_cases={failure.case_id for failure in failures},
+            )
+            review_errors = review_module.review_problems(review, template)
+            review_complete = not review_errors
+            blocking.extend(review_errors)
+    if template is None:
+        blocking.append("human review cannot be validated without valid comparable evidence")
+
+    if not run.get("cases"):
+        status = Gate2Status.NOT_RUN
+    elif adapter_key in OFFLINE_ADAPTER_KEYS or run.get("evidence_kind") == "offline":
+        status = Gate2Status.INFRASTRUCTURE_ONLY
+    else:
+        status = Gate2Status.FAILED if blocking else Gate2Status.PASSED
 
     return Gate2Report(
         brain_alias=brain_alias,
         adapter_key=adapter_key,
         status=status,
-        run_completed=run_completed,
+        run_completed=evidence.completed,
         expected_identity_hash=identity_hash,
         observed_identity_hash=observed_identity if isinstance(observed_identity, str) else None,
         mechanically_eligible=mechanically_eligible,
-        real_model_evidence=real_model_evidence,
+        real_model_evidence=evidence.real_model,
         blocking=tuple(blocking),
         failures=failures,
         waived=tuple(waived),
         rejected_waivers=tuple(rejected),
-        manual_cases=manual_cases,
-        case_count=len(cases),
+        manual_cases=tuple(_manual_cases(entries)),
+        case_count=len(entries),
         sample_count=len(samples),
-        notes=tuple(notes),
+        notes=(
+            "hashes bind evidence; they do not authenticate its author or provider",
+            "offline runs prove infrastructure only; no first-baseline bypass exists",
+        ),
+        candidate_valid=candidate_valid,
+        comparison_valid=comparison_valid,
+        incumbent_authorised=incumbent_authorised,
+        review_complete=review_complete,
+        comparison=comparison.as_dict() if comparison is not None else None,
+        review_template=template,
+        acceptance_record=(
+            review_module.acceptance_record(review)
+            if status is Gate2Status.PASSED and review is not None
+            else None
+        ),
     )
 
 
@@ -347,14 +448,31 @@ def compare_bundle_hashes(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
 def load_waivers(path: pathlib.Path) -> tuple[Waiver, ...]:
     if not path.exists():
         return ()
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    class UniqueLoader(yaml.SafeLoader):
+        pass
+
+    def mapping(loader: Any, node: Any) -> dict[Any, Any]:
+        pairs = loader.construct_pairs(node, deep=True)
+        result = {}
+        for key, value in pairs:
+            if not isinstance(key, str) or key in result:
+                raise WaiverError("duplicate or invalid waiver mapping key")
+            result[key] = value
+        return result
+
+    UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+    try:
+        document = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueLoader)
+    except yaml.YAMLError:
+        raise WaiverError("invalid waiver YAML") from None
     return parse_waivers(document, where=path.name)
 
 
 def parse_waivers(document: Any, *, where: str = "<waivers>") -> tuple[Waiver, ...]:
     if document is None:
         return ()
-    if not isinstance(document, dict) or "waivers" not in document:
+    if not isinstance(document, dict) or set(document) != {"waivers"}:
         raise WaiverError(f"{where}: expected a mapping with a `waivers` list")
     raw = document["waivers"]
     if not isinstance(raw, list):
@@ -397,7 +515,19 @@ def _parse_waiver(item: Any, where: str, index: int) -> Waiver:
         model_identifier=(
             str(item["model_identifier"]) if item.get("model_identifier") is not None else None
         ),
+        candidate_hash=str(item.get("candidate_hash", "")),
+        incumbent_hash=str(item.get("incumbent_hash", "")),
+        sample_indexes=_indexes(item.get("sample_indexes", []), where, minimum=1),
+        check_indexes=_indexes(item.get("check_indexes", []), where, minimum=0),
     )
+
+
+def _indexes(value: Any, where: str, *, minimum: int) -> tuple[int, ...]:
+    if not isinstance(value, list) or any(type(i) is not int or i < minimum for i in value):
+        raise WaiverError(f"{where}: invalid waiver index scope")
+    if len(set(value)) != len(value):
+        raise WaiverError(f"{where}: duplicate waiver index scope")
+    return tuple(value)
 
 
 # --------------------------------------------------------------------------
@@ -418,6 +548,11 @@ def _failures(cases: list[dict[str, Any]]) -> list[DeterministicFailure]:
                         case_id=str(case["case_id"]),
                         sample_index=int(sample.get("sample_index", 0)),
                         failing_checks=failing,
+                        check_indexes=tuple(
+                            i
+                            for i, r in enumerate(sample["check_results"])
+                            if r.get("status") == "fail"
+                        ),
                     )
                 )
     return out
@@ -430,11 +565,19 @@ def _apply_waivers(
     brain_alias: str,
     identity_hash: str,
     cases: list[dict[str, Any]],
+    candidate_hash: str,
+    incumbent_hash: str,
 ) -> tuple[list[WaivedFailure], list[DeterministicFailure], list[RejectedWaiver]]:
     known_cases = {str(case["case_id"]) for case in cases}
     failing_cases = {failure.case_id for failure in failures}
 
-    valid: dict[str, Waiver] = {}
+    valid: dict[tuple[str, int], Waiver] = {}
+    failure_map = {(f.case_id, f.sample_index): f for f in failures}
+    models = {
+        (c["case_id"], s["sample_index"]): s.get("model_identifier")
+        for c in cases
+        for s in c["samples"]
+    }
     rejected: list[RejectedWaiver] = []
     for waiver in waivers:
         if waiver.identity_hash != identity_hash:
@@ -459,12 +602,39 @@ def _apply_waivers(
         if waiver.case_id not in failing_cases:
             rejected.append(RejectedWaiver(waiver, "case did not fail in this run"))
             continue
-        valid[waiver.case_id] = waiver
+        keys = [(waiver.case_id, i) for i in waiver.sample_indexes]
+        if (
+            waiver.candidate_hash != candidate_hash
+            or waiver.incumbent_hash != incumbent_hash
+            or not incumbent_hash
+            or not keys
+            or not waiver.check_indexes
+            or len(set(keys)) != len(keys)
+            or len(set(waiver.check_indexes)) != len(waiver.check_indexes)
+            or any(type(i) is not int or i < 1 for i in waiver.sample_indexes)
+            or any(type(i) is not int or i < 0 for i in waiver.check_indexes)
+            or not review_module.valid_date(waiver.date.isoformat())
+            or len(waiver.reason.strip()) < MIN_REASON_CHARS
+            or any(
+                key not in failure_map
+                or tuple(sorted(waiver.check_indexes)) != failure_map[key].check_indexes
+                or models[key] != waiver.model_identifier
+                for key in keys
+            )
+        ):
+            rejected.append(
+                RejectedWaiver(waiver, "stale or out-of-scope artifact/sample/check/model waiver")
+            )
+            continue
+        if any(key in valid for key in keys):
+            rejected.append(RejectedWaiver(waiver, "duplicate/conflicting waiver scope"))
+            continue
+        valid.update({key: waiver for key in keys})
 
     waived: list[WaivedFailure] = []
     unwaived: list[DeterministicFailure] = []
     for failure in failures:
-        matched = valid.get(failure.case_id)
+        matched = valid.get((failure.case_id, failure.sample_index))
         if matched is None:
             unwaived.append(failure)
         else:

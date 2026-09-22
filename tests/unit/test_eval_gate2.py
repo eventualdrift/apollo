@@ -109,83 +109,13 @@ def waiver(**kwargs: Any) -> Waiver:
 # -- the mechanical conditions --------------------------------------------
 
 
-def test_all_checks_pass_makes_the_gate_mechanically_eligible() -> None:
+def test_legacy_green_subset_is_no_longer_acceptance_eligible() -> None:
     report = evaluate_gate2(run(), identity_hash=IDENTITY)
-    assert report.mechanically_eligible
-    assert report.blocking == ()
-    assert report.status is Gate2Status.PASSED
-    assert report.run_completed
-
-
-def test_one_failure_with_no_waiver_fails_the_gate() -> None:
-    report = evaluate_gate2(run(cases=[case(statuses=("fail",))]), identity_hash=IDENTITY)
-    assert report.status is Gate2Status.FAILED
     assert not report.mechanically_eligible
-    assert any("no waiver" in reason for reason in report.blocking)
-    # The run itself completed. That is a different fact.
-    assert report.run_completed
-
-
-def test_one_failure_with_a_valid_waiver_is_recorded_as_waived() -> None:
-    report = evaluate_gate2(
-        run(cases=[case(statuses=("fail",))]), identity_hash=IDENTITY, waivers=(waiver(),)
-    )
-    assert report.status is Gate2Status.PASSED
-    assert len(report.waived) == 1
-    assert report.waived[0].waiver.reason.startswith("Shorter phrasing")
-    assert report.rejected_waivers == ()
-    assert len(report.failures) == 1, "the failure is still on the record, not erased"
-
-
-def test_a_waiver_from_a_different_identity_is_rejected() -> None:
-    report = evaluate_gate2(
-        run(cases=[case(statuses=("fail",))]),
-        identity_hash=IDENTITY,
-        waivers=(waiver(identity_hash=OTHER_IDENTITY),),
-    )
     assert report.status is Gate2Status.FAILED
-    assert report.waived == ()
-    assert "identity hash" in report.rejected_waivers[0].reason
-
-
-def test_a_waiver_for_the_wrong_case_is_rejected() -> None:
-    report = evaluate_gate2(
-        run(cases=[case(statuses=("fail",))]),
-        identity_hash=IDENTITY,
-        waivers=(waiver(case_id="per_999"),),
-    )
-    assert report.status is Gate2Status.FAILED
-    assert "no such case" in report.rejected_waivers[0].reason
-
-
-def test_a_waiver_for_the_wrong_brain_is_rejected() -> None:
-    report = evaluate_gate2(
-        run(cases=[case(statuses=("fail",))]),
-        identity_hash=IDENTITY,
-        waivers=(waiver(brain_alias="brain.reference"),),
-    )
-    assert report.status is Gate2Status.FAILED
-    assert "brain.reference" in report.rejected_waivers[0].reason
-
-
-def test_a_waiver_for_a_case_that_passed_is_rejected() -> None:
-    report = evaluate_gate2(run(), identity_hash=IDENTITY, waivers=(waiver(),))
-    assert report.rejected_waivers[0].reason == "case did not fail in this run"
-    assert report.status is Gate2Status.PASSED
-
-
-def test_an_identity_mismatch_blocks_the_gate() -> None:
-    report = evaluate_gate2(run(identity=OTHER_IDENTITY), identity_hash=IDENTITY)
-    assert report.status is Gate2Status.FAILED
-    assert any("identity hash mismatch" in reason for reason in report.blocking)
-
-
-def test_an_unstable_bundle_hash_blocks_the_gate() -> None:
-    report = evaluate_gate2(
-        run(cases=[case(samples=3, stable=False, manual=True)]), identity_hash=IDENTITY
-    )
-    assert report.status is Gate2Status.FAILED
-    assert any("bundle hash differed" in reason for reason in report.blocking)
+    assert any("version 2" in reason for reason in report.blocking)
+    # Full-evidence conditions and bound waivers are exercised by
+    # test_gate2_acceptance.py. These old sparse fixtures are diagnostic only.
 
 
 def test_an_incomplete_sample_blocks_the_gate() -> None:
@@ -194,20 +124,6 @@ def test_an_incomplete_sample_blocks_the_gate() -> None:
     )
     assert not report.run_completed
     assert report.status is Gate2Status.FAILED
-
-
-def test_a_manual_only_case_manufactures_no_deterministic_verdict() -> None:
-    entry = case(manual=True, samples=3)
-    for sample in entry["samples"]:
-        sample["check_results"] = [c for c in sample["check_results"] if c["type"] == "manual"]
-        sample["deterministic_status"] = "no_deterministic_checks"
-    entry["deterministic_status"] = "no_deterministic_checks"
-    report = evaluate_gate2(run(cases=[entry]), identity_hash=IDENTITY)
-    assert report.failures == ()
-    assert len(report.manual_cases) == 1
-    assert report.manual_cases[0].sample_count == 3
-    assert "Did Apollo hold the position?" in report.manual_cases[0].rubric
-    assert report.mechanically_eligible
 
 
 def test_a_missing_run_is_not_run_and_never_passes() -> None:
@@ -226,7 +142,7 @@ def test_an_empty_run_is_not_run() -> None:
 def test_the_fake_brain_never_passes_gate_two_however_green() -> None:
     """Fake proves the machinery. It is not evidence about Apollo."""
     report = evaluate_gate2(run(brain="brain.fake", adapter="fake"), identity_hash=IDENTITY)
-    assert report.mechanically_eligible
+    assert not report.mechanically_eligible
     assert not report.real_model_evidence
     assert report.status is Gate2Status.INFRASTRUCTURE_ONLY
     assert not report.passed
@@ -236,7 +152,7 @@ def test_the_fake_brain_never_passes_gate_two_however_green() -> None:
 def test_run_completion_and_gate_status_are_reported_separately() -> None:
     report = evaluate_gate2(run(cases=[case(statuses=("fail",))]), identity_hash=IDENTITY)
     rendered = "\n".join(report.as_lines())
-    assert "EVAL RUN COMPLETED:  yes" in rendered
+    assert "EVAL RUN COMPLETED:  no" in rendered  # legacy schema cannot establish completion
     assert "GATE 2:              FAILED" in rendered
 
 

@@ -307,23 +307,63 @@ def test_the_run_record_is_written_and_complete(runner_factory, cases, tmp_path)
     document = json.loads(path.read_text(encoding="utf-8"))
 
     for field in (
-        "brain_alias", "provider_key", "adapter_key", "render_version", "compiler_version",
-        "token_estimator", "identity_version", "identity_hash", "generation_params",
+        "brain_alias",
+        "provider_key",
+        "adapter_key",
+        "render_version",
+        "compiler_version",
+        "token_estimator",
+        "identity_version",
+        "identity_hash",
+        "generation_params",
         "determinism",
+        "corpus_hash",
+        "context_settings",
+        "evidence_kind",
     ):
         assert document[field] not in (None, ""), field
     case = document["cases"][0]
     for field in (
-        "case_id", "tags", "behavioural_expectation", "undesired_characteristics",
-        "input_context", "bundle_hash", "samples",
+        "case_id",
+        "tags",
+        "behavioural_expectation",
+        "undesired_characteristics",
+        "input_context",
+        "bundle_hash",
+        "samples",
+        "case_definition",
     ):
         assert field in case
     sample = case["samples"][0]
     for field in (
-        "sample_index", "status", "response", "check_results", "model_identifier",
-        "prompt_tokens", "completion_tokens", "latency_ms", "invocation_id", "turn_id",
+        "sample_index",
+        "status",
+        "response",
+        "check_results",
+        "model_identifier",
+        "prompt_tokens",
+        "completion_tokens",
+        "latency_ms",
+        "invocation_id",
+        "turn_id",
+        "rendered_prompt_hash",
+        "finish_reason",
     ):
         assert field in sample
+
+    from apollo.evals.evidence import RunEvidence, corpus_hash
+
+    assert RunEvidence.model_validate(document).suite_version == 2
+    assert document["corpus_hash"] == corpus_hash(cases)
+    assert document["evidence_kind"] == "offline"
+    with runner._db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT rendered_prompt_hash, finish_reason FROM model_invocation WHERE id = %s",
+            (sample["invocation_id"],),
+        )
+        row = cur.fetchone()
+        assert row["rendered_prompt_hash"] == sample["rendered_prompt_hash"]
+        assert row["finish_reason"] == sample["finish_reason"]
 
 
 def test_determinism_is_recorded_as_observed_not_assumed(runner_factory, cases) -> None:

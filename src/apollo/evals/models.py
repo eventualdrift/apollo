@@ -141,6 +141,8 @@ class SampleRecord:
     completion_tokens: int | None = None
     reasoning_tokens: int | None = None
     latency_ms: int | None = None
+    rendered_prompt_hash: str | None = None
+    finish_reason: str | None = None
 
     @property
     def deterministic_results(self) -> list[CheckResult]:
@@ -174,7 +176,10 @@ class RunRecord:
     determinism: dict[str, Any]
     conversation_id: uuid.UUID | None = None
     cases: list[dict[str, Any]] = field(default_factory=list)
-    suite_version: int = 1
+    suite_version: int = 2
+    corpus_hash: str = ""
+    evidence_kind: str = "unknown"
+    context_settings: dict[str, int] = field(default_factory=dict)
 
     @property
     def filename(self) -> str:

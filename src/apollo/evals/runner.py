@@ -40,6 +40,12 @@ from apollo.core.conversations import create_benchmark_conversation
 from apollo.core.identity import Identity, IdentityLoader, snapshot_identity
 from apollo.core.policy import check_brain_permitted
 from apollo.evals.checks import run_checks
+from apollo.evals.evidence import (
+    DETERMINISTIC_SAMPLES,
+    MANUAL_SAMPLES,
+    case_definition,
+    corpus_hash,
+)
 from apollo.evals.models import PersonaCase, RunRecord, SampleRecord
 from apollo.sanitise import error_detail, error_kind
 from apollo.storage.db import Database
@@ -48,13 +54,7 @@ from apollo.storage.unit_of_work import unit_of_work
 
 log = logging.getLogger(__name__)
 
-#: Manual cases run three times so a human reads variation rather than one
-#: sample dressed up as the answer (spec J.3).
-MANUAL_SAMPLES = 3
-DETERMINISTIC_SAMPLES = 1
-
 DEFAULT_RUNS_DIR = pathlib.Path("evals/runs")
-
 
 
 def compile_case_bundle(
@@ -174,6 +174,18 @@ class PersonaRunner:
                         "beneath an unchanged model name",
             },
             conversation_id=conversation_id,
+            corpus_hash=corpus_hash(cases),
+            evidence_kind=(
+                "offline"
+                if provider.kind == "fake" or brain.adapter_key == "fake"
+                else "provider_generation"
+            ),
+            context_settings={
+                "context_budget": provider.context_budget,
+                "reserved_output": provider.reserved_output,
+                "max_context": capabilities.max_context,
+                "identity_cap": self._config.identity_token_cap,
+            },
         )
 
         for case in cases:
@@ -293,6 +305,8 @@ class PersonaRunner:
             # A count only. The reasoning text never left the adapter (spec H.3).
             sample.reasoning_tokens = generation.reasoning_tokens
             sample.latency_ms = generation.latency_ms
+            sample.rendered_prompt_hash = generation.rendered_prompt_hash
+            sample.finish_reason = generation.finish_reason
             sample.check_results = run_checks(case.checks, generation.text, case.input)
             self._finalise(conversation_id, turn_id, generation.text, now=self._clock())
         else:
@@ -372,6 +386,7 @@ class PersonaRunner:
     ) -> dict[str, Any]:
         return {
             "case_id": case.id,
+            "case_definition": case_definition(case),
             "source_file": case.source_file,
             "tags": list(case.tags),
             "behavioural_expectation": case.behavioural_expectation,
@@ -408,6 +423,8 @@ class PersonaRunner:
             "completion_tokens": sample.completion_tokens,
             "reasoning_tokens": sample.reasoning_tokens,
             "latency_ms": sample.latency_ms,
+            "rendered_prompt_hash": sample.rendered_prompt_hash,
+            "finish_reason": sample.finish_reason,
         }
 
     def write(self, record: RunRecord) -> pathlib.Path:
@@ -436,6 +453,9 @@ def to_document(record: RunRecord) -> dict[str, Any]:
         "generation_params": record.generation_params,
         "determinism": record.determinism,
         "conversation_id": str(record.conversation_id) if record.conversation_id else None,
+        "corpus_hash": record.corpus_hash,
+        "evidence_kind": record.evidence_kind,
+        "context_settings": record.context_settings,
         "cases": record.cases,
     }
 

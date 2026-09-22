@@ -155,6 +155,9 @@ class RunDiff:
         return (
             self.identity_hash_match
             and self.estimator_match
+            and self.compiler_version_match
+            and not self.only_in_a
+            and not self.only_in_b
             and not self.bundle_hash_mismatches
         )
 

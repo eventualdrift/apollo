@@ -135,6 +135,16 @@ def test_a_response_only_change_is_surfaced() -> None:
     assert changed.samples[0].response_changed
 
 
+def test_compiler_version_mismatch_invalidates_diagnostic_comparison() -> None:
+    a, b = run(), run()
+    b["compiler_version"] = "another-compiler"
+    assert not diff_runs(a, b).comparison_valid
+
+
+def test_missing_case_invalidates_diagnostic_comparison() -> None:
+    assert not diff_runs(run(), run(cases=[])).comparison_valid
+
+
 def test_a_changed_check_is_listed_with_both_statuses() -> None:
     a = run()
     b = run(cases=[one_case(check_status="fail", status="fail")])

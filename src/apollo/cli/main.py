@@ -24,7 +24,6 @@ from apollo.storage.db import (
 
 DEFAULT_CASES_DIR = "evals/persona/cases"
 DEFAULT_RUNS_DIR = "evals/runs"
-DEFAULT_WAIVERS = "evals/persona/waivers.yaml"
 
 
 def _service(config) -> tuple[Database, TurnService]:  # type: ignore[no-untyped-def]
@@ -77,6 +76,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_gate2 = eval_sub.add_parser("gate2", help="evaluate Gate 2 for a run record")
     p_gate2.add_argument("run")
+    p_gate2.add_argument("--incumbent", help="explicit distinct incumbent run")
+    p_gate2.add_argument("--incumbent-acceptance", help="prior incumbent acceptance receipt")
+    p_gate2.add_argument("--review", help="persisted human review JSON")
+    p_gate2.add_argument("--review-template", help="write a new pending template; never overwrite")
+    p_gate2.add_argument("--write-acceptance", help="write a new receipt only if the gate passes")
     p_gate2.add_argument("--waivers", default=None)
     p_gate2.add_argument("--json", action="store_true")
 
@@ -214,6 +218,8 @@ def _run_eval(config, args) -> int:  # type: ignore[no-untyped-def]
     from apollo.evals import corpus as corpus_module
     from apollo.evals import gate2 as gate2_module
     from apollo.evals.diff import diff_runs, load_run_document
+    from apollo.evals.evidence import DEFAULT_CASES_DIR as ACCEPTANCE_CASES_DIR
+    from apollo.evals.evidence import load_document
     from apollo.evals.loader import load_cases
     from apollo.evals.preflight import preflight
     from apollo.evals.replaceability import BRAIN_ORDER, build_report
@@ -267,12 +273,46 @@ def _run_eval(config, args) -> int:  # type: ignore[no-untyped-def]
         return 0
 
     if args.eval_command == "gate2":
-        run = load_run_document(pathlib.Path(args.run))
-        waivers = gate2_module.load_waivers(pathlib.Path(args.waivers or DEFAULT_WAIVERS))
-        identity = IdentityLoader(config.identity_dir).load()
-        gate_report = gate2_module.evaluate_gate2(
-            run, identity_hash=identity.content_hash, waivers=waivers
-        )
+        try:
+            run = load_document(pathlib.Path(args.run))
+            incumbent = load_document(pathlib.Path(args.incumbent)) if args.incumbent else None
+            prior = (
+                load_document(pathlib.Path(args.incumbent_acceptance))
+                if args.incumbent_acceptance
+                else None
+            )
+            review = load_document(pathlib.Path(args.review)) if args.review else None
+            waivers: tuple[gate2_module.Waiver, ...] = ()
+            if args.waivers:
+                waiver_path = pathlib.Path(args.waivers)
+                if not waiver_path.is_file():
+                    raise FileNotFoundError
+                waivers = gate2_module.load_waivers(waiver_path)
+            identity = IdentityLoader(config.identity_dir).load()
+            cases = load_cases(ACCEPTANCE_CASES_DIR)
+            if not corpus_module.coverage(cases).complete:
+                print("Gate 2: repository corpus coverage is incomplete", file=sys.stderr)
+                return 1
+            gate_report = gate2_module.evaluate_gate2(
+                run,
+                identity_hash=identity.content_hash,
+                identity=identity,
+                cases=cases,
+                waivers=waivers,
+                incumbent=incumbent,
+                incumbent_acceptance=prior,
+                review=review,
+            )
+            if args.review_template and gate_report.review_template is not None:
+                with pathlib.Path(args.review_template).open("x", encoding="utf-8") as out:
+                    out.write(json.dumps(gate_report.review_template, indent=2) + "\n")
+            if args.write_acceptance and gate_report.passed:
+                with pathlib.Path(args.write_acceptance).open("x", encoding="utf-8") as out:
+                    out.write(json.dumps(gate_report.acceptance_record, indent=2) + "\n")
+        except (ApolloError, OSError, ValueError) as exc:
+            # Evidence errors must not echo file contents, secrets or provider bodies.
+            print(f"Gate 2 evidence error: {type(exc).__name__}", file=sys.stderr)
+            return 2
         if args.json:
             print(json.dumps(gate_report.as_dict(), indent=2))
         else:
