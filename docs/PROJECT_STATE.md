@@ -10,7 +10,71 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
-## Current checkpoint: local HTTP 500 correction (2026-09-22)
+## Current checkpoint: verified recovery archive (2026-09-22)
+
+Reconciled clean at `be4f4aece919ebf3111a8697b98098ffd578cce0` on
+`claude/apollo-m2-real-models`, in lowercase `/home/jvm/apollo`. The operator completed the
+separately labelled recovery backup locally through Pinentry. Ciphertext SHA-256 was rechecked:
+
+- Archive: `/home/jvm/apollo-scratch/encrypted-evidence/apollo-recovery-20260922T173608Z-d74f418deb66.tar.gpg`
+- SHA-256: `1bb5044b98dc5ae1ee247461e44811295f99723f403b05455b0ddc190775ad12`
+- The adjacent `.verified.json` records successful decryption/inventory/checksum verification of
+  248 members. This reconciliation did not decrypt or rerun the completed backup.
+
+Recovery-archive integrity and historical completeness are separate: **53 original RAM artifacts
+remain missing**, including the newer 98-invocation dump. The recovery archive contains surviving
+evidence, the older checksum-verified 82-invocation dump, unchanged historical inventories, and a
+separate missing-artifact report; it does not reconstruct the missing A/B/C files. Existing plaintext
+copies were not encrypted in place or deleted.
+
+The former empirical container `apollo-gate1-test-20260922` was absent from the checked default
+Docker daemon at `unix:///var/run/docker.sock`; current live database counts/relationships could
+not be verified. No fresh database recovery, dump or PostgreSQL restore was performed by this
+recovery backup. Earlier restore/row-count claims below describe their historical checkpoints,
+not current live database availability. All previous inventories and reports remain unchanged.
+
+Preparation of one new corrected-runtime full-persona experiment with integrated preservation is
+separately authorised; no new generation or acceptance is established by this checkpoint.
+**M2 remains unaccepted.** No incumbent designation, waiver, acceptance receipt or M3 work.
+
+### Fresh experiment prepared, not executed
+
+The single-use local launcher is
+`/home/jvm/apollo-scratch/fresh-corrected-persona-20260922/run_and_preserve.py`.
+Its adjacent sealed `workflow-plan.json` has SHA-256
+`1af3fc3fb01e9913bc062f92438e5363b8ccfa7703de72a80d6b4e0c1d9a6a81`.
+It pins the current Apollo sources, identity/corpus, frozen configuration, existing model,
+corrected C executable and libraries, and orchestration controller; no rebuild or retuning.
+The corrected executable's SHA-256 remains
+`ed9e282ed31d915a0219c7da960bf0078080b33bd86ca14fdd5afb53264f29b8`.
+
+The new identity is `fresh-corrected-persona-20260922T174515Z`, with a separately named container
+`apollo-fresh-20260922-174515` and database `apollo_fresh_20260922_174515`. These are planned names,
+not existing recovered resources. The user-terminal workflow provisions this dedicated loopback-only,
+tmpfs-backed PostgreSQL instance using the cached pinned image and Apollo's runtime-role grants.
+It performs one recorded live Gate 1, then only on PASS one unchanged full corpus: 30 cases,
+70 samples and 60 required manual observations, derived from the current corpus. No retries,
+replacement samples, Gate 2 decision or human acceptance is supplied.
+
+Preparation verification: 59 new synthetic orchestration tests and 54 existing offline backup-helper
+tests passed under `/usr/bin/python3 -B`, with zero skips. The launcher selects the already installed
+dependency-bearing virtual environment for real imports; its `--prepare-check` exited 0 after
+checking source/runtime/model/configuration hashes, private transient staging, persistent ciphertext
+storage, cached image metadata, GPG/Pinentry availability and the in-memory archive inventory/verifier.
+No container, database, model server, generation, encryption or decryption was started by preparation.
+Live database provisioning/access and owned-server readiness remain deferred checks that must pass
+inside the user's local execution before generation. The unchanged 627-test Apollo suite was not rerun.
+
+The same local execution attempts a consistent new dump, a visible-response review dossier and
+encrypted, full-inventory verification even after a failed or partial experiment. Experiment and
+preservation outcomes remain separate; manual review is pending. Persistent ciphertext and its
+adjacent `.verified.json` will use new `apollo-fresh-persona-...tar.gpg` names in
+`/home/jvm/apollo-scratch/encrypted-evidence`. Pinentry handles the passphrase locally. No fresh
+archive or verification-success record exists yet. Dump archive reading is not a PostgreSQL restore
+test. Plaintext staging and the dedicated database remain private but transient, **not crash-durable
+before encryption completes**; sources, databases and containers are not automatically deleted.
+
+## Historical checkpoint: local HTTP 500 correction (2026-09-22)
 
 Started clean at `6c1ea4a8665ae588a8829f169561aafa46c097a3` on
 `claude/apollo-m2-real-models`, in lowercase `/home/jvm/apollo`. Apollo changes are limited to
