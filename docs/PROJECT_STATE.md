@@ -10,7 +10,63 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
-## Current checkpoint: GPT-OSS reference unlock reconciled (2026-09-23)
+## Current checkpoint: Qwen3-30B comparator hardware-incompatible (2026-09-23)
+
+Reconciled at `ef780ef05f3bcb53552d2d0cd4671311ffee24e2` on `claude/apollo-m2-real-models`, clean
+working tree, in lowercase `/home/jvm/apollo`. The focused Qwen comparison is no longer "next": it
+was attempted and stopped at model loading. **No behavioural comparison exists.**
+
+### GPT-OSS position is unchanged
+
+The corrected-runtime full persona run `765544f1-a050-43e2-b960-5b0ea361599a` remains completed —
+30 cases, 70 / 70 samples, 0 generation failures — and remains **unaccepted**. It is not an
+incumbent, first baseline or receipt holder, and nothing below changes that.
+
+### Qwen3-30B-A3B-NVFP4: attempted for model loading only
+
+Comparator `nvidia/Qwen3-30B-A3B-NVFP4`, revision `2538ded2a4edb247b4d2b4a8ba24e44bd4c017c3`,
+cached weights 18,096,329,088 bytes, against one RTX 5070 Ti (16 GiB VRAM) and ~14.7 GiB host RAM.
+
+One normal load was attempted and failed on **genuine CUDA VRAM exhaustion**: a 24 MiB allocation
+was refused with 92 MiB free, against a 14,530,694,348-byte budget. A single direct 5 GiB CPU
+offload — justified from that preserved deficit, not re-derived — was then attempted after the
+host-RAM gate passed at 8,172,122,112 bytes available against a 7,516,192,768-byte requirement. It
+failed on **container/host RAM capacity**: the container cgroup's `memory.peak` reached
+`memory.max` exactly (10 GiB) with 22,042 limit events, no cgroup OOM kill, swap disabled in-cgroup,
+and vLLM aborted before readiness.
+
+**NVFP4 support was observed, twice.** `CutlassNvFp4LinearKernel` and the `VLLM_CUTLASS` MoE backend
+were selected successfully in both loads, so this is a capacity result and **not** a kernel, runtime
+or quantisation incompatibility.
+
+Qwen never reached a healthy or ready state. No OpenAI-compatible endpoint became available. **Gate 1
+generations 0, persona generations 0, total behavioural generations 0.** No generative readiness
+prompt was used. The database path was never reached, so the internal-IP DSN override remains
+untested in a live run.
+
+### What now works
+
+The private benchmark **networking** design is validated and is not the blocker: model and database
+containers attach only to an internal Docker network, publish no host ports, and are reached at a
+runtime-discovered internal IPv4. The **preservation** path is also working: both the
+continuation-2 and continuation-3 failures were packaged, encrypted through local Pinentry, then
+decrypted and verified member-by-member. Latest verified archive
+`apollo-qwen-focused-c3-20260923T133225Z-5c0add2af1c3.tar.gpg`, SHA-256
+`a338586dfbd71164b14e15c2e04aea1b13c6fb035a3d97527ba8007d9ba881f3`, 118 members. Plaintext sources
+were retained; the zero-generation benchmark container and its network were retired afterwards.
+
+### Advisory conclusion and boundaries
+
+Advisory conclusion for this attempted comparison is **C: insufficient behavioural evidence to
+prefer either candidate**, because of comparator hardware capacity rather than any observed Qwen
+behaviour. **This does not establish that GPT-OSS is behaviourally better than Qwen.** No incumbent,
+first baseline, waiver, acceptance receipt, Gate 2 or human review exists or is implied.
+**M2 remains unaccepted.** No M3.
+
+A replacement comparator that fits this hardware has not been selected; a read-only inventory of
+locally cached candidates is the next step, and it authorises no download, load or experiment.
+
+## Historical checkpoint: GPT-OSS reference unlock reconciled (2026-09-23)
 
 Reconciled at `f6b577bf0a3740b7967027f32f20bf0530c2f74b` on
 `claude/apollo-m2-real-models`, clean working tree, in lowercase `/home/jvm/apollo`. This entry
