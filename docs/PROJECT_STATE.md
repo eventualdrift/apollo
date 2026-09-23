@@ -10,7 +10,66 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
-## Current checkpoint: verified recovery archive (2026-09-22)
+## Current checkpoint: GPT-OSS reference unlock reconciled (2026-09-23)
+
+Reconciled at `f6b577bf0a3740b7967027f32f20bf0530c2f74b` on
+`claude/apollo-m2-real-models`, clean working tree, in lowercase `/home/jvm/apollo`. This entry
+supersedes the "prepared, not executed" wording retained below: that experiment subsequently
+executed. The earlier sections are preserved unchanged rather than rewritten.
+
+### Fresh corrected GPT-OSS run — completed, not accepted
+
+Run `765544f1-a050-43e2-b960-5b0ea361599a`, suite version 2, `evidence_kind=provider_generation`,
+`brain.local` / `openai_compatible` / `chat-v1`, model `ggml-org/gpt-oss-20b-GGUF`, estimator
+`conservative-v1`, identity `2026.09.20-1` (SHA-256
+`bdcda4269cf41cb8f6f89b2f8a93120e7e51f0024dd18b1eebf2ed2927725fa8`), corpus SHA-256
+`c86cb3c6a6ed511f392f887d00c0b19ca6e38393771d2afc09267b3b015631c9`. Artifact SHA-256
+`27ae3f62a1a2b3516393f8fc4332b86d31736733423f479b8e82551d3bc4ffaa`.
+
+Counts recomputed directly from that artifact: 30 cases, **70 / 70 samples completed, 0 generation
+failures**, every sample `finish_reason=stop`, 70 distinct invocation IDs and 70 distinct turn IDs.
+Deterministic outcomes 58 pass / 12 fail by sample, 24 pass / 6 fail by case; check results 181
+pass, 13 fail and 60 recorded manual observations. **Official human decisions: 0.** Deterministic
+failures remain recorded, not waived.
+
+### Behavioural review — completed and preserved, advisory only
+
+Review report SHA-256 `b6c8f1fb750b26cd81d972b88ac7b8505e769bd0461d570a0c222fecebe5b616`, with
+encrypted archive `apollo-behaviour-review-20260922T194517Z-29773477c93f.tar.gpg` (SHA-256
+`3e808aefa8d47ed3e59945507a2ffa1ad3bf764f7e9aa139be516b9c2e629aee`) and its adjacent receipt
+recording 2 verified members. Its classifications are diagnostic and advisory: **not** official
+human decisions, a waiver, a baseline or an acceptance record.
+
+### Reference unlock — verified
+
+The operator's local helper run reported `GPT-OSS REFERENCE UNLOCK VERIFIED`, extracting to
+`/dev/shm/apollo-gpt-oss-reference-5upsj_oy`. Rechecked: mode 0700, containing exactly one file,
+mode-0600 `gpt-oss-run.json`, hashing to the run artifact SHA-256 above. The passphrase was entered
+locally through Pinentry and is recorded nowhere. Reference-unlock provenance is reconciled and the
+helper is not to be rerun. Two further byte-identical copies exist at
+`/dev/shm/apollo-gpt-oss-reference-bgstmq46` and `/dev/shm/apollo-gpt-oss-reference-8qbdbwdr`.
+These `/dev/shm` stages are transient and not crash-durable; the encrypted archives remain the
+durable copies.
+
+### No baseline, and no comparison yet
+
+The fresh GPT-OSS run was explicitly **not** designated first baseline. There is no incumbent, no
+acceptance receipt, no waiver and no authorised first-baseline policy. **Qwen
+`nvidia/Qwen3-30B-A3B-NVFP4` (revision `2538ded2a4edb247b4d2b4a8ba24e44bd4c017c3`) has never been
+loaded for this comparison: model loads 0, Gate 1 generations 0, persona generations 0.** No
+comparison exists. The first integrated workflow attempt failed before model loading, at
+reference-archive unlock; its single-use reservation stands and must not be reset.
+
+Host CDI was repaired previously and the active `/etc/cdi/nvidia.yaml` still matches the recorded
+post-repair SHA-256 `f1b7517e9340c858358bc0ec0e6f6f9afffdc795dfd3b7672bd4b2f0692710c0`. The fresh
+CUDA smoke PASS is that maintenance task's recorded historical result, not a check repeated here.
+Do not repair CUDA again without a new justified failure.
+
+Next work is the separately bounded focused Qwen comparison, which must account for the existing
+reservation and build preservation in before its first model call. **M2 remains unaccepted.** No
+incumbent designation, waiver, acceptance receipt, Gate 2 acceptance or M3 work.
+
+## Historical checkpoint: verified recovery archive (2026-09-22)
 
 Reconciled clean at `be4f4aece919ebf3111a8697b98098ffd578cce0` on
 `claude/apollo-m2-real-models`, in lowercase `/home/jvm/apollo`. The operator completed the
