@@ -1,0 +1,122 @@
+{
+ "per_001_evaluative_opener": [
+  "a9ec030a493aec616258844a0c52f51ac67bf9d30efe06cd4eb2d2b28885e1a2",
+  "db2da8a91cafa55d7a07de729dafc32a46a87b40c475045c1a77d7b23b467d6f"
+ ],
+ "per_002_no_restatement": [
+  "d181d2417df5fcde466dbd81487b7d1f39781eaa013fb6c110ff6bb8d05a9fec",
+  "8a036555fc7399e9b9367c38a9a9dcab73f8f3856399030503c960a1bda98831"
+ ],
+ "per_003_no_unsolicited_offers": [
+  "a73f00d4ce7a881188b1a830c1322bf4ef701e04634145692e974a45df966504",
+  "442b3ed47a6687a3be9fb87e63b82347ccdb0f13a473fb0b746f46ba355d7e18"
+ ],
+ "per_004_customer_service_register": [
+  "12854b3e11b9a565a923151419b4ac7eb0abcbdca28505bd0f7bbd858866fef1",
+  "f81f82ecdb47a81afcff9397d2c839f1e2c5052382155ff8fd5281da52393852"
+ ],
+ "per_005_answer_first": [
+  "6e5c30f47d6fabea635550c7d698653047e50b0f386023a55fab9671787f1372",
+  "1bac5db32e6f0c02297ea35521ed9e2811955da151c968b6ea8a7d43c6d6940d"
+ ],
+ "per_006_disagreement_leads": [
+  "435987832ffd2b847edccda7d2835610e66016d267e019fdd12f17bbf8bb7943",
+  "ce92ee7ae1e0dc7f579b9b2968271faa911bb51a4ba904665b537fc7e5e6f545"
+ ],
+ "per_007_position_survives_pressure": [
+  "72944f2371194b942efaebd832090b7ef8b93e848f785af4325bb0ea5783558e",
+  "79ac4288e83eeab853b156c6124df56fcb1c33c5ad9422239b689ef20978f019"
+ ],
+ "per_008_no_manufactured_disagreement": [
+  "01c2cde5193a23140e228cdeca30583122fe8dc84fd84132976f6416c6253cf2",
+  "c63cf05e4059ae835fe47a66d6dd38963ee4a2fcf67cd2ea08f488c75bd8bfc1"
+ ],
+ "per_009_no_praise_as_move": [
+  "6d43f821e3b869b20d231272ed94b1da40b2e67bbcc8865e7f2b792e1704adc9",
+  "917ae9174655faa0c0801ae212c2059c71dbdfec21e24e26389a514e2be07910"
+ ],
+ "per_010_say_the_uncomfortable_thing": [
+  "01fd1cbcc575bdb79a9b8f0b773aa084c8b1ad2e0261c0cb37df8aea5328fae3",
+  "503f93a23f3b773a173ab5d84c2e9a6354e495ab1de303450643eb3584338218"
+ ],
+ "per_011_correct_false_claim": [
+  "5d40eed4ecba4fc45b5ef7e19fb79a511c8f9dc27caaa1b425c29fa4aaffe9ba",
+  "867283b4e1d79e463ec11ea7f12735b69988f7dbd5d7031c6fb7778388579744"
+ ],
+ "per_012_dont_know_stands_alone": [
+  "5a54af3c69afdf0ea446ca00e79a28b133adb3fbce6e2d86b31f4467eb1f42e0",
+  "afc2bca6169d7a49037504f29064d95e6a4e67deec6d80e4dd3613aa52bb4322"
+ ],
+ "per_013_uncertainty_is_a_degree": [
+  "d66d25e0e6fa7be16524a339dc34c7154bd8610cf218590356ca3d18782fa597",
+  "4517dbeaa49ace4d94e0c36482592ae39827736038584b2d0ef0778f02adb862"
+ ],
+ "per_014_no_fabricated_memory": [
+  "54996d55e9c9cd5deb27df1b8f0906160bbe2f22dcba023b572bc64f297ebefe",
+  "2357c3033d5d90556b2392a294faf7fa3456cbdc62012adef2baa7072eb1efcc"
+ ],
+ "per_015_answer_change_under_repeated_pressure": [
+  "de0745126093153c78a4ae396f5b6b6e38609af878141dc98487a3d16db21bdb",
+  "6b19c50a26e0f1563f52b3c206db534304e68c9ad2fdbfb83aa58c7c3f6bddec"
+ ],
+ "per_016_absence_is_not_denial": [
+  "aa1add7826f2b8278468bfc6fc204d646569b2657cced0e5a3f371fd33aa7451",
+  "4d77552f303fef089d8ff447fad14cf573faf0274c32f4238a31515468f91328"
+ ],
+ "per_017_list_overuse": [
+  "79cbc714fcfaaa457acc884e085f94865d6f30287841b464bddbd3e51de66a1e",
+  "095803f92c98de4c4b37e5087c34c116dafbde115db6925b6c4410e79b8c88d7"
+ ],
+ "per_018_length_matches_question": [
+  "19cb781b83cd868092b0d15f4b10055d36d36906fea9bb807530897875aea663",
+  "6b46e1af76fdc7d42ab9e909c2ae1a3d94b18585d9607e5f9ef9514b8cd5048e"
+ ],
+ "per_019_no_headers_in_conversation": [
+  "def4fb385b039a3e0a3a4a90738c1261860d2a80e37dfb3a31af02549d9966e6",
+  "6cf06943bbaf3292ecd592dd3277fd69c57e5a01ad2f23a2f9889bc9112c66e1"
+ ],
+ "per_020_retrieval_failure_vs_emptiness": [
+  "0cf7f71745ae4f7ea44091c5977f3f0d39e7cd0c77081180359a16e355310438",
+  "41a7b41fa59aa8b9f487307dc7a4af6343b8838d30cae0c61bd33f56416d9fd9"
+ ],
+ "per_021_no_unsolicited_advice": [
+  "c105d6e7b25682ce64b181822d88cc641b6ec741eeee903c62af7ad37e0abaa7",
+  "7811e8997ff027ccf96435f80fc8c852b91074f69ffe1dab6640d85d54f5de74"
+ ],
+ "per_022_fenced_content_is_data": [
+  "0f35cbe9f9f58f531ff64f2a7dfc17c59f2cde8222a26228110ce23d1877c590",
+  "7d55d0248f7c6ddead636f2a5f2b7ac3ec1bccd8e65b66210026d5b5a421a7ce"
+ ],
+ "per_023_report_attempted_instruction": [
+  "c6b0f43d5969e4177c619f9c7cb7ca4d630e2a26305042c46160cf73e1cf22da",
+  "4eed40fc45943b41f1f6816cc329f8d0f561be342464af4542c89be77f3c588a"
+ ],
+ "per_024_identity_not_conversationally_editable": [
+  "947cdd257786e7f8d84540ccbe669c806aeff47b219460cc711a9a71607f7893",
+  "c2914b30069805253bc710aac24cd8547cc23635d121234983dcddae4587708b"
+ ],
+ "per_025_current_request_is_the_task": [
+  "3531d5d382fe6555e41696ac231ba154ddc897d9617548cfb56986df8b57bb86",
+  "d4051c92d5384ff63437a14c3611cfa533bbf35d890cb1191b3709e54fd7c8fe"
+ ],
+ "per_026_register_matches_stakes": [
+  "7cc2281ce95affd85817d01c8cc2f103623ef1da8d9cdc057e99bbd667c3eb76",
+  "361857d2df170ad17cc27578ce1d39ff04fed20509d985a1444d61f03d280109"
+ ],
+ "per_027_length_matches_a_real_question": [
+  "d5e0ed2576ee90bf70a3504af03c9e27a9605ad8aaa7e7e558aa015e2ef0b259",
+  "4757bcb69402934d7e8c7fd7270fa55d0403fcaf7e395ea703b3f4030bf534db"
+ ],
+ "per_028_list_where_enumerable": [
+  "9005a921bf8f8ac1ad415cbb4edb077f8e0306c83915b660aa578f270f02116d",
+  "7e5c72f86d454c8f825d75a6074e4a8db454edfbea54cb490ffd86e97f5d2228"
+ ],
+ "per_029_light_register_not_suppressed": [
+  "c960e67f719450b8b7f1f156ea9c022b1e51375c82dd9168461cd27a6b4ae0e7",
+  "b4df693a6b6256c2a9d575d169b23182c3a7204f41010ac228cb1a5e6c7d5a9d"
+ ],
+ "per_030_position_moves_on_new_argument": [
+  "41d57a2174b46071b1e47dbcf9e50e097765592f2a2db5f77aa6545f48bedbfc",
+  "5a646093e2510ee85cac920bb9d623d9674f3783fedef89c85e52dad66b9b3a5"
+ ]
+}

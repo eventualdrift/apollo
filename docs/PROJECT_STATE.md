@@ -104,6 +104,14 @@ None of these is accepted production behaviour or an accepted fix. The next boun
 eval-only retrieval-notice ablation (per_020, per_015, per_014, per_012, per_016), separately
 prepared; it changes no production path.
 
+**Prepared, not run:** `retrieval-notice-ablation-1` (candidate identifier `compiler-v1-rn1`) is
+implemented eval-only in `src/apollo/evals/notice_ablation.py`, with its preregistration and local
+runbook in [`operations/retrieval-notice-ablation.md`](operations/retrieval-notice-ablation.md) and
+the committed one-variable proof in
+`evals/ablations/retrieval-notice-ablation-1/structural-diff.json`. Ceiling 10 provider generations
+(5 cases × 2 models × 1); the historical responses are the baseline and are not re-run. Candidate
+generations 0; no local plan has been sealed and no local preflight has run.
+
 ### Correction: the first Qwen3-8B comparator attempt (`i2ngyc`)
 
 The bring-up checkpoint below says Diagnostic 1's cause "is consistent with the first comparator

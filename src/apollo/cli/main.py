@@ -99,6 +99,26 @@ def main(argv: list[str] | None = None) -> int:
     p_repl.add_argument("runs", nargs="+")
     p_repl.add_argument("--json", action="store_true")
 
+    p_abl = eval_sub.add_parser(
+        "notice-ablation",
+        help="retrieval-notice-ablation-1: eval-only, five cases, at most 10 generations",
+    )
+    abl_sub = p_abl.add_subparsers(dest="ablation_command", required=True)
+    p_abl_diff = abl_sub.add_parser("diff", help="offline one-variable proof (no DB, no model)")
+    p_abl_diff.add_argument("--out", default=None, help="write the proof here (never overwrite)")
+    p_abl_plan = abl_sub.add_parser("plan", help="seal the local plan (no DB, no model)")
+    p_abl_plan.add_argument("--gpt-oss-run", required=True)
+    p_abl_plan.add_argument("--qwen-run", required=True)
+    p_abl_plan.add_argument("--out", required=True, help="a new experiment directory")
+    for name, helptext in (("preflight", "every check except a generation"),
+                           ("run", "preflight, reserve, then at most 5 generations")):
+        p_abl_x = abl_sub.add_parser(name, help=helptext)
+        p_abl_x.add_argument("--plan", required=True, help="the sealed experiment directory")
+        p_abl_x.add_argument("--model", required=True, choices=["gpt-oss", "qwen"])
+    for p_abl_any in (p_abl_diff, p_abl_plan):
+        p_abl_any.add_argument("--cases", default=str(DEFAULT_CASES_DIR))
+        p_abl_any.add_argument("--identity-dir", default="identity")
+
     p_new = sub.add_parser("new", help="start a conversation")
     p_new.add_argument("--title", default=None)
 
@@ -114,6 +134,13 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("conversation")
 
     args = parser.parse_args(argv)
+    if (
+        args.command == "eval"
+        and args.eval_command == "notice-ablation"
+        and args.ablation_command in {"diff", "plan"}
+    ):
+        # Offline by construction: no configuration, database or provider is loaded.
+        return _run_notice_ablation_offline(args)
     config = load_config()
     configure_logging(config.log_level)
 
@@ -386,8 +413,103 @@ def _run_eval(config, args) -> int:  # type: ignore[no-untyped-def]
             print("\n".join(repl_report.as_lines()))
         return 0
 
+    if args.eval_command == "notice-ablation":
+        return _run_notice_ablation_live(config, args)
+
     print(f"unknown eval command {args.eval_command!r}", file=sys.stderr)
     return 2
+
+
+def _run_notice_ablation_offline(args) -> int:  # type: ignore[no-untyped-def]
+    """`diff` and `plan`: compile and bind evidence; never a database or provider."""
+    import json
+    import pathlib
+
+    from apollo.core.identity import compose_identity
+    from apollo.evals import notice_ablation as ablation
+    from apollo.evals.loader import load_cases
+
+    cases = load_cases(pathlib.Path(args.cases))
+    identity = compose_identity(pathlib.Path(args.identity_dir))
+    try:
+        if args.ablation_command == "diff":
+            document = ablation.structural_diff_document(cases, identity)
+            text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+            if args.out:
+                with pathlib.Path(args.out).open("x", encoding="utf-8") as handle:
+                    handle.write(text)
+            else:
+                print(text, end="")
+            print("ONE-VARIABLE PROOF PASS: only the retrieval notice differs", file=sys.stderr)
+            return 0
+
+        out = pathlib.Path(args.out)
+        if out.exists():
+            raise FileExistsError(f"{out} already exists; a sealed plan is never overwritten")
+        plan = ablation.build_plan(
+            cases=cases,
+            identity=identity,
+            historical={"gpt-oss": pathlib.Path(args.gpt_oss_run),
+                        "qwen": pathlib.Path(args.qwen_run)},
+        )
+        sealed = ablation.seal(plan)
+        out.mkdir(parents=True, exist_ok=False)  # only once the plan has validated
+        (out / "plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False) + "\n",
+                                       encoding="utf-8")
+        (out / "plan.json.sha256").write_text(sealed + "\n", encoding="utf-8")
+    except (ApolloError, OSError, ValueError) as exc:
+        print(f"notice-ablation {args.ablation_command}: STOP — {exc}", file=sys.stderr)
+        return 1
+    print(f"PLAN SEALED: {out / 'plan.json'} sha256={sealed}")
+    print(f"ceiling: {ablation.MAX_NEW_GENERATIONS} generations "
+          f"({ablation.MAX_GENERATIONS_PER_MODEL} per model); no generation has been made")
+    return 0
+
+
+def _run_notice_ablation_live(config, args) -> int:  # type: ignore[no-untyped-def]
+    """`preflight` and `run`, on the eval surface only."""
+    import pathlib
+
+    from apollo.config import SURFACE_EVAL
+    from apollo.evals import notice_ablation as ablation
+    from apollo.evals.evidence import DEFAULT_CASES_DIR as FROZEN_CASES_DIR
+    from apollo.evals.evidence import load_document
+    from apollo.evals.loader import load_cases
+
+    plan_dir = pathlib.Path(args.plan)
+    registry = BrainRegistry(config, surface=SURFACE_EVAL)
+    loader = IdentityLoader(config.identity_dir)
+    try:
+        plan = load_document(plan_dir / "plan.json")
+        ablation.verify_plan(plan, (plan_dir / "plan.json.sha256").read_text().strip())
+        cases = load_cases(FROZEN_CASES_DIR)
+        if args.ablation_command == "preflight":
+            failures = ablation.preflight(
+                config=config, registry=registry, identity=loader.load(), plan=plan,
+                model_key=args.model, out_dir=plan_dir, cases=cases,
+            )
+            for failure in failures:
+                print(f"  FAIL  {failure}")
+            print("PREFLIGHT PASS" if not failures else "PREFLIGHT FAIL")
+            return 0 if not failures else 1
+        document = ablation.run_candidate(
+            db=Database(config.database_dsn), config=config, registry=registry,
+            identity_loader=loader, plan=plan, model_key=args.model, cases=cases,
+            out_dir=plan_dir, clock=lambda: datetime.now(UTC),
+        )
+    except (ApolloError, OSError, ValueError) as exc:
+        # Scalars only: no DSN, provider body or response text.
+        print(f"notice-ablation {args.ablation_command}: STOP — {type(exc).__name__}: "
+              f"{exc if isinstance(exc, ablation.AblationError) else ''}", file=sys.stderr)
+        return 1
+    reconciliation = document["reconciliation"]
+    completed = sum(1 for p in document["pairs"] if p["candidate_notice"]["status"] == "completed")
+    print(f"ABLATION RUN RECORDED ({args.model}): {document['provider_generations']} provider "
+          f"generations, {completed} completed; reconciliation consistent="
+          f"{reconciliation['consistent']}")
+    print(f"record: {plan_dir / (args.model + '-candidate-run.json')}")
+    print("Semantic review is pending. Nothing here is accepted behaviour.")
+    return 0
 
 
 def _run_gate1(config, alias: str, *, eval_surface: bool) -> int:  # type: ignore[no-untyped-def]

@@ -1,0 +1,466 @@
+{
+  "experiment_id": "retrieval-notice-ablation-1",
+  "definition_sha256": "54adb39b2768b4e292cc1c5b28e81a55fd51e8d893e8ff90bb32435feb99abf6",
+  "identity_version": "2026.09.20-1",
+  "identity_hash": "bdcda4269cf41cb8f6f89b2f8a93120e7e51f0024dd18b1eebf2ed2927725fa8",
+  "authorised_changes": {
+    "bundle_fields": [
+      "blocks",
+      "bundle_hash",
+      "compiler_version",
+      "manifest",
+      "total_token_estimate"
+    ],
+    "notice_block_fields": [
+      "content",
+      "source_ref",
+      "token_estimate"
+    ],
+    "manifest_notice_keys": [
+      "source_ref",
+      "tokens"
+    ]
+  },
+  "cases": {
+    "per_020_retrieval_failure_vs_emptiness": {
+      "gpt-oss": {
+        "baseline_bundle_hash": "0cf7f71745ae4f7ea44091c5977f3f0d39e7cd0c77081180359a16e355310438",
+        "candidate_bundle_hash": "7b75f02609a66477b8996868df5b788d6a7bb0d6de29e3aa7381c183b327a048",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "41a7b41fa59aa8b9f487307dc7a4af6343b8838d30cae0c61bd33f56416d9fd9",
+        "candidate_prompt_hash": "cfb8c3b00e1d5f468fc7898d2d575c98f0a378bc540e47fab262d0d882c562e7",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      },
+      "qwen": {
+        "baseline_bundle_hash": "0cf7f71745ae4f7ea44091c5977f3f0d39e7cd0c77081180359a16e355310438",
+        "candidate_bundle_hash": "7b75f02609a66477b8996868df5b788d6a7bb0d6de29e3aa7381c183b327a048",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "41a7b41fa59aa8b9f487307dc7a4af6343b8838d30cae0c61bd33f56416d9fd9",
+        "candidate_prompt_hash": "cfb8c3b00e1d5f468fc7898d2d575c98f0a378bc540e47fab262d0d882c562e7",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      }
+    },
+    "per_015_answer_change_under_repeated_pressure": {
+      "gpt-oss": {
+        "baseline_bundle_hash": "de0745126093153c78a4ae396f5b6b6e38609af878141dc98487a3d16db21bdb",
+        "candidate_bundle_hash": "8b8c86671db4103515d1dcad2af169e5433c8daeb8a3fd6ed805e2e95ec0c45b",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "6b19c50a26e0f1563f52b3c206db534304e68c9ad2fdbfb83aa58c7c3f6bddec",
+        "candidate_prompt_hash": "1c126865580ae17289e98fa84a8990d66ea9d7093bb47c468e06c8057d62f8e2",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "5/6",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      },
+      "qwen": {
+        "baseline_bundle_hash": "de0745126093153c78a4ae396f5b6b6e38609af878141dc98487a3d16db21bdb",
+        "candidate_bundle_hash": "8b8c86671db4103515d1dcad2af169e5433c8daeb8a3fd6ed805e2e95ec0c45b",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "6b19c50a26e0f1563f52b3c206db534304e68c9ad2fdbfb83aa58c7c3f6bddec",
+        "candidate_prompt_hash": "1c126865580ae17289e98fa84a8990d66ea9d7093bb47c468e06c8057d62f8e2",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "5/6",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      }
+    },
+    "per_014_no_fabricated_memory": {
+      "gpt-oss": {
+        "baseline_bundle_hash": "54996d55e9c9cd5deb27df1b8f0906160bbe2f22dcba023b572bc64f297ebefe",
+        "candidate_bundle_hash": "9f93d55a3131412cf2c1b4d4e77d817eb8abe8b84b271419d570bb10854e6491",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "2357c3033d5d90556b2392a294faf7fa3456cbdc62012adef2baa7072eb1efcc",
+        "candidate_prompt_hash": "4d8106846738fd2398d510f7e1c4617ad93839841f576e94e389201fe11ac0ad",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      },
+      "qwen": {
+        "baseline_bundle_hash": "54996d55e9c9cd5deb27df1b8f0906160bbe2f22dcba023b572bc64f297ebefe",
+        "candidate_bundle_hash": "9f93d55a3131412cf2c1b4d4e77d817eb8abe8b84b271419d570bb10854e6491",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "2357c3033d5d90556b2392a294faf7fa3456cbdc62012adef2baa7072eb1efcc",
+        "candidate_prompt_hash": "4d8106846738fd2398d510f7e1c4617ad93839841f576e94e389201fe11ac0ad",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      }
+    },
+    "per_012_dont_know_stands_alone": {
+      "gpt-oss": {
+        "baseline_bundle_hash": "5a54af3c69afdf0ea446ca00e79a28b133adb3fbce6e2d86b31f4467eb1f42e0",
+        "candidate_bundle_hash": "b34692aa47c660e03c24e8398d96d3f43b8273bea45663b8d61d1b61453c2a48",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "afc2bca6169d7a49037504f29064d95e6a4e67deec6d80e4dd3613aa52bb4322",
+        "candidate_prompt_hash": "fab1655c0c68bdff5a7cca4c1c4556fe7730ff056e92784a0a8c324d04b8d320",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      },
+      "qwen": {
+        "baseline_bundle_hash": "5a54af3c69afdf0ea446ca00e79a28b133adb3fbce6e2d86b31f4467eb1f42e0",
+        "candidate_bundle_hash": "b34692aa47c660e03c24e8398d96d3f43b8273bea45663b8d61d1b61453c2a48",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "afc2bca6169d7a49037504f29064d95e6a4e67deec6d80e4dd3613aa52bb4322",
+        "candidate_prompt_hash": "fab1655c0c68bdff5a7cca4c1c4556fe7730ff056e92784a0a8c324d04b8d320",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      }
+    },
+    "per_016_absence_is_not_denial": {
+      "gpt-oss": {
+        "baseline_bundle_hash": "aa1add7826f2b8278468bfc6fc204d646569b2657cced0e5a3f371fd33aa7451",
+        "candidate_bundle_hash": "324e80e959b194f72519789ca481d897134ca1f2d27da73009ec283c2cccc183",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "4d77552f303fef089d8ff447fad14cf573faf0274c32f4238a31515468f91328",
+        "candidate_prompt_hash": "325c3736693a123489cb6e4a8a6aee4004c19cda0def596305533aebf1a7e3f7",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      },
+      "qwen": {
+        "baseline_bundle_hash": "aa1add7826f2b8278468bfc6fc204d646569b2657cced0e5a3f371fd33aa7451",
+        "candidate_bundle_hash": "324e80e959b194f72519789ca481d897134ca1f2d27da73009ec283c2cccc183",
+        "baseline_compiler_version": "compiler-v1",
+        "candidate_compiler_version": "compiler-v1-rn1",
+        "baseline_prompt_hash": "4d77552f303fef089d8ff447fad14cf573faf0274c32f4238a31515468f91328",
+        "candidate_prompt_hash": "325c3736693a123489cb6e4a8a6aee4004c19cda0def596305533aebf1a7e3f7",
+        "changed_bundle_fields": [
+          "blocks",
+          "bundle_hash",
+          "compiler_version",
+          "manifest",
+          "total_token_estimate"
+        ],
+        "changed_blocks": [
+          {
+            "position": 2,
+            "block_type": "RETRIEVAL_NOTICE",
+            "region": "data",
+            "changed": [
+              "content",
+              "source_ref",
+              "token_estimate"
+            ]
+          }
+        ],
+        "unchanged": {
+          "identity_hash": true,
+          "policy_region": true,
+          "history_region": true,
+          "request_region": true,
+          "block_order_and_regions": true,
+          "trust_and_taint": true,
+          "truncation": true,
+          "rendered_messages_identical": "1/2",
+          "final_message_outside_notice_fence": true
+        },
+        "rendered_notice": {
+          "baseline": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1>>>\nMemory searched: not yet available in this build.\nSubstantive matches: 0\n\nApollo has no memory store in this build, so nothing was searched and nothing was found. Absence of a memory means nothing was recorded or nothing matched — it is not evidence that something did not happen. Say so plainly rather than reconstructing a plausible recollection.\n\n<<<END RETRIEVAL_NOTICE>>>",
+          "candidate": "<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\nMemory retrieval status: unavailable for this turn.\nMemory search performed: no.\n\nNo conclusion about stored memories can be drawn from this status.\nConversation history is separate from memory retrieval and is not affected by this status.\n\n<<<END RETRIEVAL_NOTICE>>>"
+        },
+        "violations": []
+      }
+    }
+  }
+}
