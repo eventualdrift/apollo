@@ -10,7 +10,78 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
-## Current checkpoint: Qwen3-30B comparator hardware-incompatible (2026-09-23)
+## Current checkpoint: Qwen3-8B-AWQ runtime bring-up passed (2026-09-24)
+
+Reconciled at `efdbcbc993a0ee21b70d74009ce43cca12c44ff4` on `claude/apollo-m2-real-models`, clean
+working tree, in lowercase `/home/jvm/apollo`. This entry supersedes the "replacement comparator not
+selected" wording below. **No behavioural comparison exists.**
+
+### Comparator selection and acquisition
+
+Qwen3-30B-A3B-NVFP4 remains closed as hardware-incompatible under the bounded policy recorded below
+and is not to be retried. The replacement comparator is `Qwen/Qwen3-8B-AWQ` at immutable revision
+`4da05a8edb55c6046cce958586c33b61da07bb79`: checkpoint-declared AWQ, 12 files, 6,098,581,864 weight
+bytes. It was downloaded once and verified offline against acquisition manifest SHA-256
+`40b29c3e28897d5299b682a4804cbd2060aa749f9881f6fff5fd819d27715e80`.
+
+### Runtime bring-up: three startup blockers, three bounded corrections
+
+The first comparator attempt stopped at model loading (vLLM child rc 1, cause not established at the
+time). Four load-only diagnostics followed. Each made exactly one model load and zero generations,
+and each was encrypted, decrypted and verified member-by-member.
+
+| Diagnostic | Configuration | Result |
+|---|---|---|
+| 1 | `--gpu-memory-utilization 0.85` | vLLM's startup free-GPU-memory reservation check failed (`request_memory`), before model loading |
+| 2 | 0.80 | Startup check passed; AWQ config resolved, `MarlinLinearKernel` selected, 2/2 shards, model loaded (5.71 GiB). Triton then could not load its freshly compiled helper from the container's `noexec` `/tmp` |
+| 3 | 0.80, executable `/tmp` | Model loaded, KV cache initialised (47,504 tokens). FlashInfer's warmup-only sampler JIT build then found no CUDA toolkit |
+| 4 | 0.80, executable `/tmp`, `VLLM_USE_FLASHINFER_SAMPLER=0` | **PASS**: engine initialised, API server started, `/health` ready, `/v1/models` returned the expected alias; stopped cleanly |
+
+Each correction was separately authorised and bound to the preceding established root cause; none
+is model tuning. Diagnostic 1's cause is consistent with the first comparator attempt's failure under
+the identical configuration, but that attempt's own cause was never independently established.
+
+Encrypted evidence, in order (plaintext stages retained):
+
+- `apollo-qwen8b-20260923T140118Z-45123e061d2f.tar.gpg` —
+  `cc43dec34c15b96bb90fefccd83aa1ce6b12f9c9138a3d79f3a62e5a226fb525`
+- `apollo-qwen8b-loaddiag-20260924T115916Z-0695f8f3d7c6.tar.gpg` —
+  `f3ed1dffc7838560faa8aa03062b777d8375bd92471d45074b15c5e1636ce1bf`
+- `apollo-qwen8b-loaddiag080-20260924T123055Z-675032abc180.tar.gpg` —
+  `f25f2532d75c77ff594ac87d3949f8572f13dbf1e6b58acaa0bbc5c913ebf862`
+- `apollo-qwen8b-loaddiag080exec-20260924T171711Z-6e4383baa7f9.tar.gpg` —
+  `c6a37a35d9531ba6875318c2414d11615f4bdc8f5798274c7af9fd1945f2f785`
+- `apollo-qwen8b-loaddiag080nofi-20260924T182353Z-ae8d92cbf506.tar.gpg` (PASS) —
+  `d54254121daecc2b39dd8c15c0aff31e0fa2a115457acbd3dcf343f309a427e2`, 73 members
+
+### Frozen Qwen3-8B runtime configuration
+
+- `Qwen/Qwen3-8B-AWQ` @ `4da05a8edb55c6046cce958586c33b61da07bb79`, alias
+  `apollo-qwen3-8b-awq-benchmark`; checkpoint AWQ (observed AutoAWQ/Marlin); context 9216;
+  `--gpu-memory-utilization 0.80`; `enable_thinking=false`; no `trust_remote_code`; no CPU offload.
+- Benchmark container: 10 GiB memory; `/tmp` tmpfs `rw,exec,nosuid,nodev`, 2 GiB;
+  `VLLM_USE_FLASHINFER_SAMPLER=0`; read-only root and model/runtime mounts; all capabilities
+  dropped; no-new-privileges; not privileged; no Docker socket.
+- Private internal Docker network, runtime-discovered container IP, no published ports, no external
+  egress.
+
+`VLLM_USE_FLASHINFER_SAMPLER=0` changes only the sampler implementation available during warmup: the
+installed source shows Apollo's greedy (temperature 0.0), seeded requests never use the FlashInfer
+sampler, and no decoding parameter changed. Any future change requires a separately established
+failure and separate authorisation. At 0.80 the load needs about 13.1 GiB of free GPU memory at
+startup; the passing run began with 13,200 MiB free and reached readiness with 448 MiB free.
+
+### State and boundaries
+
+Qwen3-8B reaches healthy non-generative API readiness. **Qwen behavioural generations 0: no Gate 1
+and no persona sample has run, and no behavioural comparison exists.** The live internal-IP database
+path is still unexercised. The GPT-OSS run `765544f1-a050-43e2-b960-5b0ea361599a` remains completed
+and **unaccepted**. No incumbent, first baseline, waiver or acceptance receipt exists, and no Gate 2
+decision has been made. **M2 remains unaccepted.** No M3.
+
+Next work is the separately bounded focused Qwen3-8B comparator under this frozen configuration.
+
+## Historical checkpoint: Qwen3-30B comparator hardware-incompatible (2026-09-23)
 
 Reconciled at `ef780ef05f3bcb53552d2d0cd4671311ffee24e2` on `claude/apollo-m2-real-models`, clean
 working tree, in lowercase `/home/jvm/apollo`. The focused Qwen comparison is no longer "next": it
