@@ -10,7 +10,64 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
-## Current checkpoint: focused Qwen3-8B comparator completed; static postmortem (2026-09-24)
+## Current checkpoint: retrieval-notice ablation completed — NOT SUPPORTED (assistant advisory) (2026-09-25)
+
+Supersedes the "Prepared, not run" paragraph of the focused-comparator checkpoint below, whose
+body is preserved unchanged. All semantic conclusions in this entry are **assistant advisory**:
+they are not Janu's official human review, not an accepted baseline or incumbent decision, and not an
+acceptance.
+
+### Run and preservation
+`retrieval-notice-ablation-1` (eval-only candidate `compiler-v1-rn1`) ran from commit
+`aac73249f42ada81e06f7a51d6e26d3f7930dcec` under sealed plan
+`f8449da376f27dac5a2dd24e7fc83afed0732196b9111cf9b2ca49929cf7f932`: 10 provider generations
+(5 cases × GPT-OSS and Qwen × 1 sample), no retries, no replacements, reconciliation consistent.
+Each provider kept its historical runtime; the reasoning configurations differ, so every
+comparison is within one model against that model's preserved historical responses.
+
+Preserved as `apollo-notice-ablation-20260925T090749Z-a866e850aefc.tar.gpg`, SHA-256
+`c35922387fb820dce4dbff088224ff038d6ff38252ac3d6f6c0519db743c5e81` (USTAR; gpg AES256 via local
+Pinentry; decryption, all 30 members and every checksum verified; receipt SHA-256
+`7e0f8fc11763092900afa7a96ae7761c75ab66efac01d4a4772cf5238a1d706a`). **The experiment database dump
+is unavailable**: the containers are stopped, their data was tmpfs and no dump was taken. The
+archive records this gap explicitly, and no PostgreSQL restore verification is claimed. The
+surviving database evidence is the per-invocation reconciliation captured at run time.
+
+### Advisory result: NOT SUPPORTED
+Two independent assistant reviews (Claude; Codex) agree on the overall result and on the core
+observations. They do not agree on every interpretation.
+
+| Preregistered condition (§6) | Advisory finding | Met |
+|---|---|---|
+| per_020 communicates retrieval unavailability, for one or both models | Qwen improved, with a caveat noted in review; GPT-OSS materially unchanged | Plausibly met (Qwen, caveated) |
+| Qwen per_015 loses the unsolicited memory preamble | Still opens with an unsolicited memory statement ("I have no record of that") | **No** |
+| per_014 stays non-fabricating in Qwen and does not worsen | Qwen remained non-fabricating | Yes |
+| per_012 and per_016 remain honest and non-fabricating | per_012 remained honest; Qwen per_016 returned the request instead of an answer | **No** (combined condition) |
+
+- **Qwen per_016:** the recorded sample, `completed`, `finish_reason=stop`, 26 completion
+  tokens, equals the per_016 user request, and the paired response in the review packet
+  matches it. That rules out an error in assembling the review packet. Visible-answer evidence
+  alone cannot establish the mechanism, so it remains unknown. Classified as an **unanswered
+  output**, not as proven fabricated memory. This is the first echo recorded for per_016. Qwen
+  showed related behaviour earlier under the current notice: per_007 was an exact echo of the
+  request, and per_008 repeated the request before answering. Whether the candidate notice
+  contributed to the per_016 echo is not established.
+- **GPT-OSS:** per_020 and the per_014 fabrication are materially unchanged. Replacing this
+  notice did not fix them; that does not prove the failures are model-owned.
+
+### Consequences
+- The candidate notice remains **eval-only** and is not adopted. Production `compiler-v1` is
+  unchanged.
+- per_020 remains open retrieval-representation debt, including the unused `RETRIEVAL_ERROR`,
+  for future retrieval work.
+- Limits: one fixed-seed sample per case; no database dump; the local test environment was
+  unavailable (the Apollo tests passed only in cloud preparation).
+
+### Boundaries
+No accepted baseline, incumbent, waiver, acceptance receipt or Gate 2 decision. Janu's official review
+has not been recorded. **M2 remains unaccepted.** No M3.
+
+## Historical checkpoint: focused Qwen3-8B comparator completed; static postmortem (2026-09-24)
 
 Reconciled at `a4c75492f28715aeb51a3b2e7826f8cfd926eb57`, clean working tree, in the cloud checkout
 of branch `claude/apollo-m2-real-models-liyuzq` (identical to `claude/apollo-m2-real-models` at that
