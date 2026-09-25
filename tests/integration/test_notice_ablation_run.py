@@ -87,7 +87,8 @@ def test_candidate_run_on_the_real_invocation_path(db, clock, tmp_path, service_
 
     # Exactly five provider calls; the failed one was not retried or replaced.
     assert brain.generate_calls == 5
-    assert brain.notices == [na.CANDIDATE_RETRIEVAL_NOTICE] * 5
+    # Five preflight renders (prompt-hash check, no generation) then five run renders.
+    assert brain.notices == [na.CANDIDATE_RETRIEVAL_NOTICE] * 10
     statuses = {p["case_id"]: p["candidate_notice"]["status"] for p in document["pairs"]}
     assert statuses.pop("per_020_retrieval_failure_vs_emptiness") == "failed"
     assert set(statuses.values()) == {"completed"}

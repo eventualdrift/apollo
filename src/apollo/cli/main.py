@@ -508,6 +508,11 @@ def _run_notice_ablation_live(config, args) -> int:  # type: ignore[no-untyped-d
           f"generations, {completed} completed; reconciliation consistent="
           f"{reconciliation['consistent']}")
     print(f"record: {plan_dir / (args.model + '-candidate-run.json')}")
+    if not reconciliation["consistent"]:
+        # The evidence is already written and kept; the exit status must not call it a success.
+        print(f"RECONCILIATION INCONSISTENT: {len(reconciliation['problems'])} problem(s); "
+              "do not treat this run as valid", file=sys.stderr)
+        return 1
     print("Semantic review is pending. Nothing here is accepted behaviour.")
     return 0
 

@@ -456,3 +456,76 @@ def test_notice_block_stays_a_fenced_t0_data_block(cases, identity):
     assert (str(notice.trust_tier), notice.region) == ("T0", Region.DATA)
     last = render_chat(candidate).messages[-1].content
     assert last.startswith("<<<RETRIEVAL_NOTICE tier=T0 ref=compiler:compiler-v1-rn1>>>\n")
+
+
+def test_preflight_passes_with_the_frozen_renderer(tmp_path, identity, cases):
+    config = _config(tmp_path)
+    plan = _plan(tmp_path, identity, cases)
+    assert na.preflight(config=config, registry=_registry(config), identity=identity, plan=plan,
+                        model_key="qwen", out_dir=tmp_path / "x", cases=cases) == []
+
+
+class _NoSystemRoleBrain(_FrozenContextBrain):
+    """An adapter configured with supports_system_role=false: policy moves to a user turn."""
+
+    def capabilities(self):  # type: ignore[no-untyped-def]
+        return dataclasses.replace(super().capabilities(), supports_system_role=False)
+
+    def render(self, bundle):  # type: ignore[no-untyped-def]
+        return render_chat(bundle, supports_system_role=False)
+
+
+class _MislabelledRendererBrain(_FrozenContextBrain):
+    """Claims the frozen renderer but renders differently: only the hash check sees it."""
+
+    def render(self, bundle):  # type: ignore[no-untyped-def]
+        return render_chat(bundle, supports_system_role=False)
+
+
+@pytest.mark.parametrize(
+    ("brain", "expected"),
+    [(_NoSystemRoleBrain, ("renderer", "live rendered prompt")),
+     (_MislabelledRendererBrain, ("live rendered prompt",))],
+)
+def test_preflight_refuses_a_renderer_that_changes_the_prompt(
+    tmp_path, identity, cases, brain, expected
+):
+    config = _config(tmp_path)
+    plan = _plan(tmp_path, identity, cases)
+    registry = BrainRegistry(config, surface=SURFACE_EVAL)
+    registry._cache["brain.qwen"] = brain(9216)
+    failures = na.preflight(config=config, registry=registry, identity=identity, plan=plan,
+                            model_key="qwen", out_dir=tmp_path / "x", cases=cases)
+    for needle in expected:
+        assert any(needle in f for f in failures), (needle, failures)
+    assert sum("live rendered prompt" in f for f in failures) == len(na.CASE_IDS)
+
+
+def test_frozen_renderer_is_outside_the_sealed_definition():
+    assert "supports_system_role" not in json.dumps(na.definition())
+    assert na.FROZEN_RENDERER == {"render_version": "chat-v1", "supports_system_role": True}
+
+
+@pytest.mark.parametrize(("consistent", "code"), [(True, 0), (False, 1)])
+def test_cli_run_exit_status_follows_reconciliation(tmp_path, monkeypatch, capsys,
+                                                     consistent, code):
+    from apollo.cli.main import main
+
+    plan_dir = tmp_path / "exp"
+    plan_dir.mkdir()
+    (plan_dir / "plan.json").write_text("{}")
+    (plan_dir / "plan.json.sha256").write_text("x\n")
+    document = {
+        "provider_generations": 5,
+        "pairs": [{"candidate_notice": {"status": "completed"}}] * 5,
+        "reconciliation": {"consistent": consistent,
+                           "problems": [] if consistent else ["per_020: bundle_hash"]},
+    }
+    monkeypatch.setattr(na, "verify_plan", lambda plan, seal: None)
+    monkeypatch.setattr(na, "run_candidate", lambda **kwargs: document)
+    monkeypatch.setenv("APOLLO_DATABASE_DSN", "postgresql://unused")
+    monkeypatch.chdir(REPO)
+    assert main(["eval", "notice-ablation", "run", "--plan", str(plan_dir),
+                 "--model", "qwen"]) == code
+    err = capsys.readouterr().err
+    assert ("RECONCILIATION INCONSISTENT" in err) is (not consistent)

@@ -216,6 +216,12 @@ QWEN = FrozenModel(
 
 MODELS: dict[str, FrozenModel] = {m.key: m for m in (GPT_OSS, QWEN)}
 
+#: The renderer the one-variable proof assumed. Deliberately outside
+#: `definition()`, so adding this guard leaves sealed plans and the committed
+#: proof byte-identical. Preflight also compares every live rendered prompt
+#: with the planned hash, which catches any renderer difference, not just these.
+FROZEN_RENDERER = {"render_version": "chat-v1", "supports_system_role": True}
+
 REASONING_CAVEAT = (
     "Reasoning configurations differ between providers (GPT-OSS: 16-token reasoning budget, "
     "separate channel; Qwen: enable_thinking=false). This is a within-model ablation: each "
@@ -720,9 +726,15 @@ def preflight(
     except ApolloError as exc:
         failures.append(f"policy refused: {exc}")
     try:
-        max_context = registry.get(model.brain_alias).capabilities().max_context
+        brain = registry.get(model.brain_alias)
+        capabilities = brain.capabilities()
     except ApolloError as exc:
         return failures + [f"adapter could not be constructed: {exc}"]
+    max_context = capabilities.max_context
+    renderer = {"render_version": brain.render_version,
+                "supports_system_role": capabilities.supports_system_role}
+    if renderer != FROZEN_RENDERER:
+        failures.append(f"renderer {renderer} differs from frozen {FROZEN_RENDERER}")
     live = {
         "context_budget": provider.context_budget,
         "reserved_output": provider.reserved_output,
@@ -732,10 +744,16 @@ def preflight(
     if live != model.context_settings:
         failures.append(f"context settings {live} differ from frozen {model.context_settings}")
     expected = plan["models"][model_key]["candidate_bundle_hashes"]
+    planned_prompts = plan["structural_diff"]["cases"]
     for case in select_cases(cases):
         _, candidate = compile_pair(case, identity=identity, model=model, now=datetime.now(UTC))
         if candidate.bundle_hash != expected[case.id]:
             failures.append(f"{case.id}: candidate bundle differs from the sealed plan")
+        # The live adapter's own render, not the proof's default one.
+        if brain.render(candidate).prompt_hash != (
+            planned_prompts[case.id][model_key]["candidate_prompt_hash"]
+        ):
+            failures.append(f"{case.id}: live rendered prompt differs from the sealed plan")
     if _reservation_path(out_dir, model_key).exists():
         failures.append(f"{model_key} is already reserved in {out_dir}; no rerun or replacement")
     return failures
