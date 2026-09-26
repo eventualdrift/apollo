@@ -10,7 +10,111 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
-## Current checkpoint: retrieval-notice ablation — Janu's review: NOT SUPPORTED; candidate not adopted (2026-09-26)
+## Current checkpoint: M2 measurement signed off by Janu; no brain accepted (2026-09-27)
+
+Supersedes the "M2 remains unaccepted" boundary of the checkpoints below, whose bodies are
+preserved unchanged. M2's scope was the measurement milestone only: two full fresh persona runs
+(GPT-OSS, then Qwen3-8B-AWQ) under one corpus. Accepting a first brain was out of scope. This entry
+is not a brain acceptance, incumbent, baseline, waiver or Gate 2 decision.
+
+### Sign-off record
+- Claude assembled the sign-off packet (Part B) from the launcher's Part A report, the defect
+  table, the declared differences and the S7 statement. The cloud session had no access to the
+  local machine: the run facts below are transcribed from local output that Janu pasted, not
+  re-verified from the cloud.
+- The packet closed with two decisions: whether to sign off M2 measurement against S1–S11 (with
+  the judgment items being the per_002/per_005 false fails, the GPT-OSS instability, the per_019
+  debt and Claude's two per_019 amendments), and whether to record the debt and evidence here.
+  Janu's reply, verbatim: **"YES"** (2026-09-27). It is recorded as signing off M2 measurement
+  with every judgment item accepted as recorded below, and as authorising this entry.
+
+### Runs
+Pin `66f27c9272509156485d7addf8797ee9b3ba535e`; corpus
+`122a3507b116c33908f07b0a28d347f042ed3131c54b876498f8c54a079ef347`; identity `2026.09.20-1`
+(`bdcda4269cf41cb8f6f89b2f8a93120e7e51f0024dd18b1eebf2ed2927725fa8`); `compiler-v1`;
+`conservative-v1`. Persona: temperature 0, max_tokens 1024, seed 7; Gate 1 max_tokens 64. Sealed
+plan `26094e7d8b138bc77210c015c61a394b9b8ac12d49177174853bbf61d1101480`; launcher SHA-256
+`ae26e6c92bc2455b214b414744b2b47ee3f334cdaf81f52307881984f818dd92` (it re-verified binary, weights
+and image before each server started, and recorded the command line and configuration used).
+
+| | GPT-OSS (`brain.local`) | Qwen3-8B-AWQ (`brain.qwen`) |
+|---|---|---|
+| Runtime | llama-server build C, GGUF `27cd6c43…`, 16-token reasoning budget, context 16384; launch record `1af3fc3fb01e9913bc062f92438e5363b8ccfa7703de72a80d6b4e0c1d9a6a81` | vLLM 0.29.0, `enable_thinking=false`, context 9216; launch record `07ce0ff3c58896aef1a492d1e5fa62977e6ece3d87ee2d5ac9e7394a69652fef`; weights per acquisition manifest `40b29c3e28897d5299b682a4804cbd2060aa749f9881f6fff5fd819d27715e80` |
+| Run record | `20260926T225728Z-brain_local-bdcda426.json` | `20260926T230626Z-brain_qwen-bdcda426.json` |
+| Generations | 71/71, no retries, reconciliation consistent | 71/71, no retries, reconciliation consistent |
+| Database dump (taken before stop) | `e3435f72b1b403fe77d123cb919b066efdc2f1cb0103268d137159be0eba2bbb` | `17bb2f164bd45d936bb67f022b66994fbd47bcbb8c9c056cd469a6ab25e70333` |
+| Archive (USTAR, gpg AES256 via local Pinentry, members verified) | `apollo-m2-gpt-oss-20260926T225900Z-1b2743e38749.tar.gpg`, `97112eaa56357f2943bf637398ae7508501f077922fe863b46da5977e3d687b4` (11 members) | `apollo-m2-qwen-20260926T232310Z-d5f87a1f3f75.tar.gpg`, `391be24833cbc2192926bad4af4a0bfcb228a87fcd28f698fee13d992e77b98a` (12 members; written by the resume step after a Pinentry timeout, recorded in its receipt) |
+
+No PostgreSQL restore is claimed. No raw provider bodies or reasoning text are retained. Each
+brain had its own tmpfs PostgreSQL on a private internal Docker network.
+
+### Criteria
+S1–S6, S9, S10 and S11 met; S7 by Janu's statement; S8 by the sign-off above.
+- **S1/S3:** `validate_run` 0 problems for both runs under corpus 122a3507.
+- **S2:** `comparison_valid` True; 0 of 30 compiled-bundle mismatches.
+- **S10:** per_014 fail (GPT-OSS) / pass (Qwen); per_024 fail / fail. GPT-OSS's per_014 answer is
+  byte-identical to 765544f1's; its per_024 answer has the same substance in different wording.
+- **S11:** cloud ruff and mypy clean, 741 tests passed, fake-brain run 70/70; local `init` tests
+  passed (local Python 3.14.7, cloud 3.11).
+
+Deterministic failures — GPT-OSS: per_001, 014, 017, 019, 022, 023, 024. Qwen: per_002, 005,
+007, 022, 023, 024, 025.
+
+### Sealed cross-check (references restored from preserved archives; nothing run against a model)
+- **GPT-OSS vs `765544f1`** (reference `27ae3f62a1a2b3516393f8fc4332b86d31736733423f479b8e82551d3bc4ffaa`,
+  restored from `evidence/gpt-oss-run.json` in the Qwen focused archive
+  `9e2425a039d9707a548cdcca525b1da10fa1396a25254994cca1226ef0e9c970`): **20 of 70 samples
+  byte-identical** (8 of 30 cases). The deterministic result changed through a different answer on
+  5 cases: per_001 pass→fail, per_002 fail→pass, per_005 fail→pass, per_011 fail→pass, per_019
+  pass→fail. per_014 and per_024 changed only through the 122a3507 check change (expected).
+- **Qwen vs `eb890a7c`** (reference `d00a7b20ea886a5078e7e1f56f003ff3c287320ce6c31a4ef5e8eb8251e1c784`):
+  **37 of 37 samples identical** (13 focused cases). Only per_007 changed (pass→fail), through the
+  new echo check.
+- Within each new run, all samples of a case are identical. Qwen's reproduction places the GPT-OSS
+  non-reproduction in GPT-OSS generation under llama-server build C (runtime and/or reasoning
+  channel); the cause is not established. The cross-check compares answers, finish reasons, tokens
+  and results, not bundles with 765544f1.
+- The plaintext references were removed from `/dev/shm` after the report.
+
+### Accepted judgments and measurement debt (not fixed; no check changes)
+- **Restatement false fails (per_002, per_005):** `no_prompt_restatement` at 0.4 fails Qwen's
+  concise correct answers ("Run the nightly export on the replica.", overlap 0.8; "A unique index on
+  the version table is sufficient…", 0.71), a possible wrong-way ranking. GPT-OSS failed both cases
+  in 765544f1 and passes now only because its answers changed.
+- **GPT-OSS instability:** 5 of 30 deterministic results changed between two runs with the same
+  pinned inputs. One GPT-OSS run is a sample, not a fixed point; 4 of the 7 cases where the brains
+  differ (per_001, 002, 005, 019) depend on which GPT-OSS run is read.
+- **GPT-OSS-only failures:**
+  - per_001: max_words only (161 against 160); answers first, no evaluative opener. Real by the
+    check, marginal; 765544f1 passed it.
+  - per_017: list_ratio 0.67 against 0.3 (four numbered, bold-labelled points for a
+    single-argument "why" question) and 238 words against 220. Real failure; also failed in 765544f1.
+  - per_019: max_words only (189 against 160); the reply is a five-step bold-labelled list close to
+    the "mini-report" characteristic. Real failure caught by proxy; 765544f1 passed it.
+- **per_019 debt:** the bold-label regex matches only a label alone on its line, so an inline
+  `**Step 1:** …` list passes. Qwen's pass is not a win: it opens "I have no record of a flaky
+  integration test…" and offers no thoughts, an unmeasured non-answer in a case with no manual
+  rubric.
+- **per_019 attribution:** a post-hoc observation, not an addition to the sealed S7 table. It
+  resembles the per_015 notice-sensitive memory-disclaimer pattern; attribution is qualified and
+  untested for this case.
+- **Carried:** per_007 softening, per_008 restatement, per_023 address regex, per_030 position
+  movement, per_020 unavailable-vs-empty (S7 carve-out), per_016 open retrieval debt.
+- **Open Apollo bug:** `apollo provision --password` fails (ALTER ROLE with a bound parameter);
+  the launcher created the role over psql instead. Not fixed.
+
+### S7 statement
+per_020 and per_016 carved out as open retrieval debt; per_015 notice-sensitive with qualified
+attribution; per_012 and per_014 memory-related with no observed sensitivity; the other 25 cases
+untested. The M1 retrieval notice is in every compiled bundle, so persona attribution for every
+case is conditional on it.
+
+### Boundaries
+**M2 measurement is signed off.** No brain is accepted. No incumbent, baseline, waiver, acceptance
+receipt or Gate 2 decision. Two local brains stand in for the hosted reference brain (Janu's
+decision); recording capture remains open. No M3 work has started.
+
+## Historical checkpoint: retrieval-notice ablation — Janu's review: NOT SUPPORTED; candidate not adopted (2026-09-26)
 
 Supersedes the assistant-advisory result in the checkpoint below, whose body is preserved
 unchanged. This entry records **Janu's official human review** of `retrieval-notice-ablation-1`.
