@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import psycopg
 from psycopg import sql
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 
 from apollo.errors import ApolloError
 
@@ -61,7 +61,7 @@ class Database:
         self._dsn = dsn
 
     @contextmanager
-    def connect(self) -> Iterator[psycopg.Connection]:
+    def connect(self) -> Iterator[psycopg.Connection[DictRow]]:
         conn = psycopg.connect(self._dsn, row_factory=dict_row, autocommit=True)
         try:
             yield conn
@@ -111,7 +111,7 @@ _STATE_TABLES = (
 )
 
 
-def apply_grants(conn: psycopg.Connection, role: str) -> None:
+def apply_grants(conn: psycopg.Connection[DictRow], role: str) -> None:
     """Grant the runtime role exactly what Apollo needs, and revoke the rest.
 
     Idempotent: safe to re-run after every migration, which is how new tables
@@ -146,7 +146,7 @@ def apply_grants(conn: psycopg.Connection, role: str) -> None:
 
 
 def provision_runtime_role(
-    conn: psycopg.Connection, role: str, *, password: str | None = None
+    conn: psycopg.Connection[DictRow], role: str, *, password: str | None = None
 ) -> bool:
     """Create the runtime role if absent and apply its grants. Returns True if created.
 
@@ -215,7 +215,7 @@ class RolePrivileges:
         return [f"{k}: {v}" for k, v in vars(self).items()]
 
 
-def describe_role_privileges(conn: psycopg.Connection, role: str) -> RolePrivileges:
+def describe_role_privileges(conn: psycopg.Connection[DictRow], role: str) -> RolePrivileges:
     """Facts about the runtime role, read from the catalogue. Used by tests and `doctor`."""
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -228,7 +228,10 @@ def describe_role_privileges(conn: psycopg.Connection, role: str) -> RolePrivile
         cur.execute(
             "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE relname = 'audit_event'"
         )
-        owner = cur.fetchone()["owner"]
+        owner_row = cur.fetchone()
+        if owner_row is None:
+            raise ApolloError("audit_event table does not exist")
+        owner = owner_row["owner"]
         cur.execute(
             "SELECT privilege_type FROM information_schema.table_privileges"
             " WHERE grantee = %s AND table_name = 'audit_event'",

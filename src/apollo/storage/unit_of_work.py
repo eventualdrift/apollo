@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 import psycopg
+from psycopg.rows import DictRow
 
 from apollo.errors import ApolloError
 from apollo.storage.db import Database, _enter_transaction, _exit_transaction
@@ -72,7 +73,7 @@ class UnitOfWorkError(ApolloError):
 class UnitOfWork:
     """A single database transaction plus its audit events."""
 
-    def __init__(self, conn: psycopg.Connection, *, expect_audit: bool = True) -> None:
+    def __init__(self, conn: psycopg.Connection[DictRow], *, expect_audit: bool = True) -> None:
         self._conn = conn
         self._events: list[AuditRecord] = []
         self._mutated = False
@@ -80,7 +81,7 @@ class UnitOfWork:
         self._expect_audit = expect_audit
 
     @property
-    def connection(self) -> psycopg.Connection:
+    def connection(self) -> psycopg.Connection[DictRow]:
         self._check_open()
         return self._conn
 
@@ -160,7 +161,7 @@ def unit_of_work(db: Database, *, expect_audit: bool = True) -> Iterator[UnitOfW
 
 @contextmanager
 def unit_of_work_on(
-    conn: psycopg.Connection, *, expect_audit: bool = True
+    conn: psycopg.Connection[DictRow], *, expect_audit: bool = True
 ) -> Iterator[UnitOfWork]:
     """A unit of work on a caller-owned connection, for tests and CLI sessions."""
     uow = UnitOfWork(conn, expect_audit=expect_audit)
