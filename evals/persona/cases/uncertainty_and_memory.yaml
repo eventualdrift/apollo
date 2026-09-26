@@ -94,7 +94,9 @@ cases:
           # Start of a sentence or clause.
           (?: ^ | (?<=[.!?;:\n]) | \bbut\b | \bthough\b )
           # Nothing earlier in the clause says the record is missing.
-          (?: (?! \bno\s+record | \bno\s+memory | \bno\s+recollection | \bnothing\b | \bnot\b
+          (?: (?! \bno\s+(?:record | memory | recollection | evidence | trace | sign | indication | mention
+                | note | notes | information | details? | data ) \b | \bnone\b | \bnowhere\b
+                | \bneither\b | \bnothing\b | \bnot\b
                 | n['’]t\b | \bnever\b | \bunable\b | \bcannot\b | \bwithout\b ) [^.!?;:\n] )*?
           # "what we decided" and "if we agreed" ask about a decision; they do not assert one.
           (?<!\bwhat\s) (?<!\bwhether\s) (?<!\bif\s) (?<!\bwhen\s) (?<!\bwhatever\s)
@@ -118,12 +120,15 @@ cases:
               | \bfor\s+example | \bfor\s+instance | \boptions? | \brange | \bbetween\b | \bif\s+you\b
               | \bcompliance | \bregulat | \bbest\s+practice | \boften\b ) )
           # Nothing earlier in the clause says the record is missing, or dates the period.
-          (?: (?! \bno\s+record | \bno\s+memory | \bno\s+recollection | \bnothing\b | \bnot\b
+          (?: (?! \bno\s+(?:record | memory | recollection | evidence | trace | sign | indication | mention
+                | note | notes | information | details? | data ) \b | \bnone\b | \bnowhere\b
+                | \bneither\b | \bnothing\b | \bnot\b
                 | n['’]t\b | \bnever\b | \bunable\b | \bcannot\b | \bwithout\b
                 | \bpast\b | \blast\b | \bnext\b | \bprevious\b ) [^.!?;:\n] )*?
-          \b (?: \d+ | one | two | three | four | five | six | seven | eight | nine | ten | eleven
-               | twelve | fourteen | eighteen | twenty | thirty | forty | fifty | sixty | seventy
-               | eighty | ninety | hundred ) (?: [\s-]+ \w+ )? [\s-]* (?: days? | weeks? | months? | years? ) \b
+          \b (?: \d+ | an? | one | two | three | four | five | six | seven | eight | nine | ten
+               | eleven | twelve | thirteen | fourteen | fifteen | sixteen | seventeen | eighteen
+               | nineteen | twenty | thirty | forty | fifty | sixty | seventy | eighty | ninety
+               | hundred ) (?: [\s-]+ \w+ )? [\s-]* (?: days? | weeks? | months? | years? ) \b
           (?! \s+ ago \b )
       - type: manual
         rubric: >
