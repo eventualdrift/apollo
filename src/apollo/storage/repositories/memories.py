@@ -76,12 +76,16 @@ class MemoryRepository:
 
     def mark_confirmed(self, memory_id: uuid.UUID, now: datetime) -> None:
         self._uow.execute(
-            "UPDATE memory SET last_confirmed_at = %s, updated_at = %s WHERE id = %s",
+            "UPDATE memory SET last_confirmed_at = GREATEST(last_confirmed_at, %s),"
+            "  updated_at = GREATEST(updated_at, %s) WHERE id = %s",
             (now, now, memory_id),
         )
 
     def mark_contradicted(self, memory_id: uuid.UUID, now: datetime) -> None:
-        self._uow.execute("UPDATE memory SET updated_at = %s WHERE id = %s", (now, memory_id))
+        self._uow.execute(
+            "UPDATE memory SET updated_at = GREATEST(updated_at, %s) WHERE id = %s",
+            (now, memory_id),
+        )
 
     def mark_superseded(self, memory_id: uuid.UUID, by: uuid.UUID, now: datetime) -> None:
         self._uow.execute(

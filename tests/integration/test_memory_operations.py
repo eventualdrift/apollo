@@ -166,6 +166,28 @@ def test_contradict_is_evidence_not_a_retraction(db: Database) -> None:
     assert _events(db, memory_id)[-1]["event_type"] == "memory.contradicted"
 
 
+def test_a_later_stamped_observation_that_commits_first_keeps_its_timestamps(
+    db: Database,
+) -> None:
+    # Two confirmations stamped 12:01 and 12:02 can commit in either order; the
+    # row keeps the latest stamp either way, and so does a contradiction.
+    confirmed = _new(db)
+    confirm_memory(db, confirmed, now=_later(2))
+    confirm_memory(db, confirmed, now=_later(1))
+    memory = get_memory(db, confirmed)
+    assert memory.last_confirmed_at == _later(2)
+    assert memory.updated_at == _later(2)
+    assert memory.counts.confirms == 2
+
+    contradicted = _new(db)
+    contradict_memory(db, contradicted, now=_later(2))
+    contradict_memory(db, contradicted, now=_later(1))
+    confirm_memory(db, contradicted, now=_later(1))
+    memory = get_memory(db, contradicted)
+    assert memory.updated_at == _later(2)
+    assert memory.last_confirmed_at == _later(1)  # the first confirmation still sets it
+
+
 def test_evidence_can_be_added_to_an_archived_memory(db: Database) -> None:
     memory_id = _new(db)
     archive_memory(db, memory_id, now=_later(1))
