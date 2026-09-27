@@ -12,6 +12,12 @@
 -- the phase-zero origin_tier rule, which Janu approved as a named constraint so
 -- a later phase can drop it. Every message raised below names statuses and
 -- rules, never a value.
+--
+-- Every function below pins `search_path = pg_catalog, public, pg_temp` and
+-- schema-qualifies the tables it reads. Unqualified, a lookup would resolve a
+-- session's temporary table first (pg_temp is searched before public unless
+-- listed), and the runtime role holds TEMP by default: a temporary `memory`
+-- table could otherwise vouch for a row the real table says is tombstoned.
 
 -- ---------------------------------------------------------------------------
 -- memory
@@ -25,7 +31,8 @@ ALTER TABLE memory ADD CONSTRAINT memory_phase0_origin_tier_ck
 -- A row replaces at most one row, so a supersession chain cannot branch or merge.
 ALTER TABLE memory ADD CONSTRAINT memory_superseded_by_uq UNIQUE (superseded_by_id);
 
-CREATE FUNCTION apollo_memory_lifecycle_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION apollo_memory_lifecycle_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     succ_status text;
     succ_next   uuid;
@@ -96,7 +103,7 @@ BEGIN
     -- commits second sees the other and is refused.
     IF OLD.status = 'active' AND NEW.status = 'superseded' THEN
         SELECT status, superseded_by_id INTO succ_status, succ_next
-          FROM memory WHERE id = NEW.superseded_by_id FOR SHARE;
+          FROM public.memory WHERE id = NEW.superseded_by_id FOR SHARE;
         IF NEW.superseded_by_id = NEW.id OR succ_status IS DISTINCT FROM 'active'
            OR succ_next IS NOT NULL THEN
             RAISE EXCEPTION 'apollo: a memory is superseded only by an active chain head '
@@ -108,7 +115,7 @@ BEGIN
     -- A superseded row is tombstoned only with its chain, after its successor
     -- (spec D.9/1). The deferred check below makes the whole chain go together.
     IF OLD.status = 'superseded' AND NEW.status = 'tombstoned' THEN
-        SELECT status INTO succ_status FROM memory WHERE id = NEW.superseded_by_id FOR SHARE;
+        SELECT status INTO succ_status FROM public.memory WHERE id = NEW.superseded_by_id FOR SHARE;
         IF succ_status IS DISTINCT FROM 'tombstoned' THEN
             RAISE EXCEPTION 'apollo: a superseded memory is tombstoned only with its chain, '
                             'after its successor'
@@ -126,9 +133,10 @@ CREATE TRIGGER memory_lifecycle_guard BEFORE INSERT OR UPDATE ON memory
 -- Provenance required (spec D.1): at commit, every new memory has an `asserts`
 -- observation. Deferred, because the observation references the memory and so
 -- can only be inserted after it, in the same transaction.
-CREATE FUNCTION apollo_memory_requires_assertion() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION apollo_memory_requires_assertion() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM memory_observation
+    IF NOT EXISTS (SELECT 1 FROM public.memory_observation
                     WHERE memory_id = NEW.id AND relation = 'asserts') THEN
         RAISE EXCEPTION 'apollo: a memory cannot exist without an asserts observation'
             USING ERRCODE = 'restrict_violation';
@@ -144,14 +152,15 @@ CREATE CONSTRAINT TRIGGER memory_requires_assertion AFTER INSERT ON memory
 -- A tombstone is complete by commit (spec D.7, D.9/1): the row's observation
 -- excerpts are cleared, and no predecessor in its chain is left untombstoned.
 -- Applied at each link, the second rule covers the whole chain.
-CREATE FUNCTION apollo_memory_tombstone_complete() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION apollo_memory_tombstone_complete() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM memory_observation
+    IF EXISTS (SELECT 1 FROM public.memory_observation
                 WHERE memory_id = NEW.id AND excerpt IS NOT NULL) THEN
         RAISE EXCEPTION 'apollo: a tombstone clears every observation excerpt of its memory'
             USING ERRCODE = 'restrict_violation';
     END IF;
-    IF EXISTS (SELECT 1 FROM memory
+    IF EXISTS (SELECT 1 FROM public.memory
                 WHERE superseded_by_id = NEW.id AND status <> 'tombstoned') THEN
         RAISE EXCEPTION 'apollo: a memory is tombstoned together with every predecessor in its chain'
             USING ERRCODE = 'restrict_violation';
@@ -170,14 +179,15 @@ CREATE CONSTRAINT TRIGGER memory_tombstone_complete AFTER UPDATE ON memory
 -- memory_observation
 -- ---------------------------------------------------------------------------
 
-CREATE FUNCTION apollo_observation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION apollo_observation_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     parent_status text;
 BEGIN
     -- FOR SHARE serialises this with a concurrent tombstone of the parent: the
     -- foreign key's own KEY SHARE lock does not conflict with an UPDATE of
     -- non-key columns, so without it both could commit.
-    SELECT status INTO parent_status FROM memory WHERE id = NEW.memory_id FOR SHARE;
+    SELECT status INTO parent_status FROM public.memory WHERE id = NEW.memory_id FOR SHARE;
 
     IF TG_OP = 'INSERT' THEN
         IF parent_status = 'tombstoned' THEN
@@ -239,7 +249,8 @@ ALTER TABLE model_invocation ADD CONSTRAINT invocation_redaction_ck CHECK (
          OR (context_bundle_hash IS NULL AND rendered_prompt_hash IS NULL))
 );
 
-CREATE FUNCTION apollo_invocation_hash_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE FUNCTION apollo_invocation_hash_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     redacting boolean := OLD.hashes_redacted_at IS NULL AND NEW.hashes_redacted_at IS NOT NULL;
 BEGIN
@@ -258,11 +269,13 @@ BEGIN
             USING ERRCODE = 'restrict_violation';
     END IF;
 
-    -- The prompt hash is recorded once, when a started call completes, and
-    -- otherwise changes only by redaction.
+    -- The prompt hash is recorded once, by the same update that completes a
+    -- started call, and otherwise changes only by redaction. Accepting it on a
+    -- row that stays `started` would let a stray write pre-empt the real hash.
     IF NEW.rendered_prompt_hash IS DISTINCT FROM OLD.rendered_prompt_hash
        AND NOT redacting
-       AND NOT (OLD.rendered_prompt_hash IS NULL AND OLD.status = 'started') THEN
+       AND NOT (OLD.rendered_prompt_hash IS NULL AND OLD.status = 'started'
+                AND NEW.status = 'completed') THEN
         RAISE EXCEPTION 'apollo: rendered_prompt_hash is set once at completion and '
                         'otherwise changes only by tombstone redaction'
             USING ERRCODE = 'restrict_violation';

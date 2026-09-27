@@ -796,3 +796,120 @@ def test_a_correction_during_a_tombstone_of_its_head_is_refused(db: Database) ->
     background["thread"].join(5)
     assert background["result"] == "refused"
     assert (status_of(db, old), status_of(db, head)) == ("active", "tombstoned")
+
+
+# ---------------------------------------------------------------------------
+# the rules cannot be fooled or pre-empted (Codex PR #8, second review)
+# ---------------------------------------------------------------------------
+
+
+def test_a_prompt_hash_is_accepted_only_by_the_completing_update(db: Database) -> None:
+    invocation = _invocation(db)
+    with rejected("rendered_prompt_hash is set once"):
+        _update_invocation(db, invocation, "rendered_prompt_hash = 'sha256:forged'")
+    _update_invocation(db, invocation, "status = 'completed', rendered_prompt_hash = 'sha256:real'")
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT rendered_prompt_hash FROM model_invocation WHERE id = %s", (invocation,)
+        )
+        assert cur.fetchone()["rendered_prompt_hash"] == "sha256:real"
+
+
+def test_a_failed_call_records_no_prompt_hash(db: Database) -> None:
+    invocation = _invocation(db)
+    with rejected("rendered_prompt_hash is set once"):
+        _update_invocation(db, invocation, "status = 'failed', rendered_prompt_hash = 'sha256:x'")
+
+
+def _shadow(cur: psycopg.Cursor[Any], table: str, row: dict[str, Any]) -> None:
+    """A session-private table of the same name, which pg_temp would resolve first."""
+    columns = {
+        "memory": "id uuid, status text, superseded_by_id uuid",
+        "memory_observation": "id uuid, memory_id uuid, relation text, excerpt text",
+    }
+    cur.execute(f"CREATE TEMP TABLE {table} ({columns[table]})")
+    cur.execute(
+        f"INSERT INTO pg_temp.{table} ({', '.join(row)}) VALUES ({', '.join(['%s'] * len(row))})",
+        tuple(row.values()),
+    )
+
+
+def test_a_temporary_memory_table_cannot_vouch_for_a_tombstoned_parent(db: Database) -> None:
+    row, _ = in_status(db, Status.TOMBSTONED)
+    with db.connect() as conn, conn.cursor() as cur:
+        _shadow(cur, "memory", {"id": row, "status": "active", "superseded_by_id": None})
+        with rejected("tombstoned memory"):
+            cur.execute(
+                "INSERT INTO public.memory_observation (id, memory_id, relation, source_kind,"
+                " excerpt, observed_at, created_at) VALUES (gen_random_uuid(), %s, 'confirms',"
+                " 'user_direct_entry', 'words', now(), now())",
+                (row,),
+            )
+
+
+def test_a_temporary_memory_table_cannot_vouch_for_a_successor(db: Database) -> None:
+    old = create(db)
+    head, _ = in_status(db, Status.TOMBSTONED)
+    with db.connect() as conn, conn.cursor() as cur:
+        _shadow(cur, "memory", {"id": head, "status": "active", "superseded_by_id": None})
+        with rejected("active chain head"):
+            cur.execute(
+                "UPDATE public.memory SET status = 'superseded', superseded_by_id = %s"
+                " WHERE id = %s",
+                (head, old),
+            )
+
+
+def test_a_temporary_observation_table_cannot_supply_an_assertion(db: Database) -> None:
+    memory_id = uuid.uuid4()
+    with (
+        rejected("without an asserts observation"),
+        db.connect() as conn,
+        conn.transaction(),
+        conn.cursor() as cur,
+    ):
+        _shadow(
+            cur,
+            "memory_observation",
+            {"id": uuid.uuid4(), "memory_id": memory_id, "relation": "asserts", "excerpt": None},
+        )
+        cur.execute(
+            "INSERT INTO public.memory (id, scope, kind, subject, content, origin_tier, origin,"
+            " status, created_at, updated_at) VALUES (%s, 'user', 'fact', 's', 'c',"
+            " 'user_asserted', 'personal', 'active', now(), now())",
+            (memory_id,),
+        )
+
+
+def test_a_temporary_observation_table_cannot_hide_an_excerpt(db: Database) -> None:
+    row = create(db, excerpt="the words")
+    with (
+        rejected("clears every observation excerpt"),
+        db.connect() as conn,
+        conn.transaction(),
+        conn.cursor() as cur,
+    ):
+        _shadow(
+            cur,
+            "memory_observation",
+            {"id": uuid.uuid4(), "memory_id": row, "relation": "asserts", "excerpt": None},
+        )
+        cur.execute(
+            "UPDATE public.memory SET status = 'tombstoned', subject = NULL, content = NULL,"
+            " tombstoned_at = now() WHERE id = %s",
+            (row,),
+        )
+
+
+def test_every_lifecycle_function_pins_its_search_path(db: Database) -> None:
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT proname, proconfig FROM pg_proc WHERE proname IN"
+            " ('apollo_memory_lifecycle_guard', 'apollo_memory_requires_assertion',"
+            "  'apollo_memory_tombstone_complete', 'apollo_observation_guard',"
+            "  'apollo_invocation_hash_guard')"
+        )
+        configs = {r["proname"]: r["proconfig"] for r in cur.fetchall()}
+    assert len(configs) == 5
+    for name, config in configs.items():
+        assert config == ["search_path=pg_catalog, public, pg_temp"], name
