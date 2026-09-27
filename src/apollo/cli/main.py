@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import TextIO
 
 from apollo.brains.registry import BrainRegistry
+from apollo.cli import memory as memory_cli
 from apollo.config import load_config
 from apollo.core.conversations import create_conversation, get_conversation, transcript
 from apollo.core.identity import IdentityLoader
@@ -163,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     p_show = sub.add_parser("show", help="print a conversation transcript")
     p_show.add_argument("conversation")
 
+    memory_cli.add_parser(sub)
+
     args = parser.parse_args(argv)
     if (
         args.command == "eval"
@@ -223,6 +226,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "eval":
         return _run_eval(config, args)
+
+    if args.command == "memory":
+        return memory_cli.run(
+            args,
+            Database(config.database_dsn),
+            memory_cli.Terminal(sys.stdin, sys.stdout, sys.stderr, lambda: datetime.now(UTC)),
+        )
 
     db, service = _service(config)
 

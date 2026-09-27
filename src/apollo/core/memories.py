@@ -21,11 +21,14 @@ from typing import Any
 
 from apollo.audit.events import Actor, AuditEvent, EventType
 from apollo.memory import lifecycle
-from apollo.memory.lifecycle import Change, MemoryNotFoundError, Operation
+from apollo.memory.lifecycle import Change, LifecycleError, MemoryNotFoundError, Operation
 from apollo.memory.models import (
+    Kind,
     Memory,
+    MemoryInputError,
     Origin,
     OriginTier,
+    Scope,
     SourceKind,
     Status,
     parse_kind,
@@ -34,6 +37,27 @@ from apollo.memory.models import (
 from apollo.storage.db import Database
 from apollo.storage.repositories import MemoryRepository
 from apollo.storage.unit_of_work import UnitOfWork, unit_of_work
+
+# Callers may import `core/` but not `memory/` (spec A.3), so the types they
+# need to read a memory or tell its errors apart are re-exported here.
+__all__ = [
+    "Kind",
+    "LifecycleError",
+    "Memory",
+    "MemoryInputError",
+    "MemoryNotFoundError",
+    "Scope",
+    "Status",
+    "archive_memory",
+    "confirm_memory",
+    "contradict_memory",
+    "correct_memory",
+    "create_memory",
+    "get_memory",
+    "list_memories",
+    "restore_memory",
+    "tombstone_memory",
+]
 
 DIRECT = SourceKind.USER_DIRECT_ENTRY
 
