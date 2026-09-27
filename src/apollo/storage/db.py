@@ -153,7 +153,15 @@ def provision_runtime_role(
     Called by `apollo provision` and by the test fixtures, so the documented
     deployment and the tested configuration are the same mechanism rather than
     two things that happen to resemble each other.
+
+    `password=None` leaves the role's password untouched: a new role gets none
+    (trust/peer auth), an existing role keeps whatever it has.
     """
+    if password is not None and (not password or "\x00" in password):
+        # libpq takes a C string, so a NUL would silently truncate the password.
+        raise RoleProvisioningError(
+            "the runtime role password must be non-empty and contain no NUL"
+        )
     ident = sql.Identifier(role)
     created = False
     with conn.cursor() as cur:
@@ -173,7 +181,16 @@ def provision_runtime_role(
                 ) from None
             created = True
         if password is not None:
-            cur.execute(sql.SQL("ALTER ROLE {} PASSWORD %s").format(ident), (password,))
+            # ALTER ROLE is a utility statement, so PostgreSQL rejects a bound
+            # parameter here, and interpolating the plaintext would put it in the
+            # statement text and any statement log. libpq hashes it client-side
+            # into a SCRAM-SHA-256 verifier; only the verifier leaves this process.
+            verifier = conn.pgconn.encrypt_password(
+                password.encode(), role.encode(), b"scram-sha-256"
+            ).decode("ascii")
+            cur.execute(
+                sql.SQL("ALTER ROLE {} PASSWORD {}").format(ident, sql.Literal(verifier))
+            )
     apply_grants(conn, role)
 
     # Verify rather than coerce: removing SUPERUSER requires superuser, so a
