@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -29,6 +30,7 @@ from apollo.logging_setup import configure_logging
 from apollo.memory.lifecycle import LifecycleError, MemoryNotFoundError
 from apollo.memory.models import Status, included_manifest_entry
 from apollo.storage.db import Database
+from apollo.storage.repositories import MemoryRepository
 
 pytestmark = pytest.mark.integration
 
@@ -221,6 +223,118 @@ def test_separate_chains_are_untouched(db: Database) -> None:
     tombstone_memory(db, forgotten, now=_later(1))
     assert get_memory(db, kept).status is Status.ACTIVE
     assert get_memory(db, kept).content == "another claim"
+
+
+# ---------------------------------------------------------------------------
+# concurrency: the chain is locked in one order and checked again under the locks
+# ---------------------------------------------------------------------------
+
+
+def _in_thread(target: Any, *args: Any) -> None:
+    """Run in another thread: its own connection and unit of work, committed on return."""
+    worker = threading.Thread(target=target, args=args)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive()
+
+
+def test_concurrent_tombstones_naming_different_rows_do_not_deadlock(
+    db: Database, monkeypatch
+) -> None:
+    """Codex finding on #11: naming the old row and the head used to lock in opposite orders."""
+    old = _new(db)
+    head = correct_memory(db, old, content="second", now=_later(1))
+    barrier = threading.Barrier(2, timeout=10)
+    lock_many = MemoryRepository.lock_many
+
+    def lock_after_both_found_the_chain(
+        self: MemoryRepository, memory_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, dict[str, Any]]:
+        if not getattr(waited, "done", False):
+            waited.done = True
+            barrier.wait()  # both requests have found the chain; neither holds a lock
+        return lock_many(self, memory_ids)
+
+    waited = threading.local()
+    monkeypatch.setattr(MemoryRepository, "lock_many", lock_after_both_found_the_chain)
+    outcome: dict[str, Any] = {}
+
+    def run(label: str, memory_id: uuid.UUID) -> None:
+        try:
+            outcome[label] = tombstone_memory(db, memory_id, now=_later(2))
+        except Exception as exc:  # recorded and asserted below
+            outcome[label] = exc
+
+    threads = [
+        threading.Thread(target=run, args=("naming old", old)),
+        threading.Thread(target=run, args=("naming head", head)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(20)
+    monkeypatch.undo()
+
+    results = list(outcome.values())
+    assert [head, old] in results  # one request tombstoned the whole chain
+    [refused] = [r for r in results if isinstance(r, Exception)]
+    assert isinstance(refused, LifecycleError)  # not DeadlockDetected
+    assert "tombstoned" in str(refused)
+    events = _tombstone_events(db)
+    assert set(events) == {old, head}  # one event per row, from the winner only
+    assert len(_rows(db, "SELECT 1 FROM audit_event WHERE event_type = 'memory.tombstoned'")) == 2
+
+
+def test_a_correction_between_finding_and_locking_the_chain_is_tombstoned_too(
+    db: Database, monkeypatch
+) -> None:
+    old = _new(db)
+    head = correct_memory(db, old, content="second", now=_later(1))
+    lock_many = MemoryRepository.lock_many
+    added: list[uuid.UUID] = []
+
+    def correct_first(
+        self: MemoryRepository, memory_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, dict[str, Any]]:
+        if not added:
+            _in_thread(
+                lambda: added.append(correct_memory(db, head, content="third", now=_later(2)))
+            )
+        return lock_many(self, memory_ids)
+
+    monkeypatch.setattr(MemoryRepository, "lock_many", correct_first)
+    removed = tombstone_memory(db, old, now=_later(3))
+    monkeypatch.undo()
+    assert removed == [added[0], head, old]
+    for memory_id in removed:
+        _assert_gone(db, memory_id)
+
+
+def test_a_chain_that_keeps_changing_is_refused_and_nothing_changes(
+    db: Database, monkeypatch
+) -> None:
+    old = _new(db)
+    chain = [old, correct_memory(db, old, content="second", now=_later(1))]
+    lock_many = MemoryRepository.lock_many
+
+    def correct_every_time(
+        self: MemoryRepository, memory_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, dict[str, Any]]:
+        _in_thread(
+            lambda: chain.append(
+                correct_memory(db, chain[-1], content="again", now=_later(len(chain)))
+            )
+        )
+        return lock_many(self, memory_ids)
+
+    monkeypatch.setattr(MemoryRepository, "lock_many", correct_every_time)
+    with pytest.raises(LifecycleError, match="kept changing"):
+        tombstone_memory(db, old, now=_later(10))
+    monkeypatch.undo()
+    assert len(chain) == 5  # three attempts, each outrun by a correction
+    assert get_memory(db, chain[-1]).status is Status.ACTIVE
+    assert get_memory(db, old).content == f"the door code is {SECRET}"
+    assert _tombstone_events(db) == {}
 
 
 # ---------------------------------------------------------------------------

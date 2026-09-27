@@ -342,20 +342,44 @@ class Tombstone:
         return self.rows[0].memory_id
 
 
+_CHAIN_ATTEMPTS = 3
+
+
+def _chain_ids(repo: MemoryRepository, memory_id: uuid.UUID) -> list[uuid.UUID]:
+    """The chain's ids, read without locks: the head first, then newest to oldest."""
+    row = repo.get(memory_id)
+    if row is None:
+        raise MemoryNotFoundError("no memory has that id")
+    while row["superseded_by_id"] is not None:
+        row = repo.get(row["superseded_by_id"])
+        if row is None:  # superseded_by_id is a foreign key; no row is ever deleted
+            raise MemoryNotFoundError("no memory has that id")
+    ids = [row["id"]]
+    while (predecessor := repo.predecessor(ids[-1])) is not None:
+        ids.append(predecessor["id"])
+    return ids
+
+
 def _chain(repo: MemoryRepository, memory_id: uuid.UUID) -> list[dict[str, Any]]:
     """The whole supersession chain, locked: the head first, then newest to oldest.
 
     A request may name any row of the chain, including a superseded one: the
     user who wants the old "4123" gone will name the old row. It resolves to
     the head, and the head brings every predecessor with it (spec D.9/1).
+
+    The chain is found without locks, then every row is locked at once in id
+    order, so two tombstones naming different rows of one chain queue behind
+    each other instead of deadlocking. Under the locks the chain is walked
+    again; if a correction committed in between and grew it, start over.
     """
-    row = _locked(repo, memory_id)
-    while row["superseded_by_id"] is not None:
-        row = _locked(repo, row["superseded_by_id"])
-    chain = [row]
-    while (predecessor := repo.lock_predecessor(chain[-1]["id"])) is not None:
-        chain.append(predecessor)
-    return chain
+    ids = _chain_ids(repo, memory_id)
+    for _ in range(_CHAIN_ATTEMPTS):
+        locked = repo.lock_many(ids)
+        current = _chain_ids(repo, memory_id)
+        if current == ids:
+            return [locked[row_id] for row_id in ids]
+        ids = current
+    raise LifecycleError("the memory kept changing while it was being tombstoned; try again")
 
 
 def tombstone(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Tombstone:

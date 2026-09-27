@@ -132,11 +132,16 @@ class MemoryRepository:
         row: dict[str, Any] | None = cur.fetchone()
         return row
 
-    def lock_predecessor(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
-        """The row this one superseded, locked; at most one (memory_superseded_by_uq)."""
+    def lock_many(self, memory_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict[str, Any]]:
+        """The rows, locked in id order, so two callers locking overlapping sets can't deadlock."""
         cur = self._uow.execute(
-            "SELECT * FROM memory WHERE superseded_by_id = %s FOR UPDATE", (memory_id,)
+            "SELECT * FROM memory WHERE id = ANY(%s) ORDER BY id FOR UPDATE", (memory_ids,)
         )
+        return {row["id"]: row for row in cur.fetchall()}
+
+    def predecessor(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
+        """The row this one superseded; at most one (memory_superseded_by_uq)."""
+        cur = self._uow.execute("SELECT * FROM memory WHERE superseded_by_id = %s", (memory_id,))
         row: dict[str, Any] | None = cur.fetchone()
         return row
 
