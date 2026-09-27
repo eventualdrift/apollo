@@ -70,6 +70,22 @@ deployments where the check matters most.
 
 Secrets come from the environment and are never written to a TOML file, a log, or the database.
 
+## Memories
+
+```sh
+apollo memory add --scope user --kind fact     # prompts for the subject, then the content
+printf '%s\n' "door code" "it is 4123" | apollo memory add --scope user --kind fact
+printf '%s\n' "it is 5555" | apollo memory correct <id>
+apollo memory confirm <id>      # also: contradict, archive, restore, show
+apollo memory list              # --status archived | superseded | tombstoned | all
+apollo memory forget <id>       # the memory and every version of it; --yes when piped
+```
+
+A memory's subject and content are read from stdin, prompted at a terminal or piped (for `add`,
+the first line is the subject and the rest the content). No argument takes them, so they stay
+out of shell history and the process list. Errors print as their kind only: a database error's
+message can quote the row it refused.
+
 ## Checks
 
 ```sh
