@@ -849,6 +849,30 @@ These constants are arbitrary starting values whose only jobs are to be consiste
 derived from evidence rather than asserted by a model. In phase zero confidence is displayed in
 context and used as a ranking tiebreaker, and gates nothing.
 
+### D.9 Clarifications (2026-09-27)
+
+Decided by Janu when approving the step 10 plan. Additive: the text of §D.1–§D.8 above is unchanged,
+and where it reads differently, this section governs. Code cites these as `spec D.9/<n>`.
+
+1. **Tombstone is chain-wide.** Tombstoning a memory tombstones the head of its supersession chain
+   and every predecessor. Each row loses its text as in §D.7, and verification-hash redaction covers
+   every invocation whose manifest included *any* row of the chain. Under §D.1 as drawn, a superseded
+   row could never be tombstoned, so a value corrected away would have been undeletable.
+2. **Tombstone is also allowed from `archived`.** Forgetting an archived memory must not require
+   restoring it first. Together with (1), the row-level transitions into `tombstoned` are
+   `active`, `archived` and — only as part of a chain tombstone — `superseded`.
+3. **Single active per chain, stated precisely.** Every supersession chain has exactly one head (the
+   one row with no successor). It has at most one `active` row, and if there is one, it is the head.
+   §D.1's "exactly one `active` row per supersession chain" cannot hold once a head is archived or
+   tombstoned; this is the invariant that is enforced.
+4. **The subject cannot be corrected** (known limitation). §D.5 carries `subject` forward, so a
+   correction changes `content` only. A wrong subject is fixed by tombstoning the memory and creating
+   a new one.
+5. **The direct-entry API is `core/memories.py`.** §D.4's `POST /memories` is not built; no HTTP
+   layer exists. The core function is the surface the CLI calls and any later route
+   must call, with the same rules: `origin_tier = user_asserted`,
+   `source_kind = user_direct_entry`, and the only route to `self` scope.
+
 ---
 
 ## E. Retrieval
