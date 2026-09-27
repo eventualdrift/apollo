@@ -73,6 +73,18 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
         "identity_version",
         "invocation_id",
         "invocations_redacted",
+        # Memory lifecycle (step 10): enums, a flag, ids and counts only.
+        # Never subject, content or excerpt.
+        "kind",
+        "observation_id",
+        "observations_redacted",
+        "origin",
+        "origin_tier",
+        "pinned",
+        "replacement_id",
+        "rows_tombstoned",
+        "scope",
+        "source_kind",
         "latency_ms",
         "max_trust_tier",
         "message_role",

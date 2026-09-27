@@ -12,6 +12,8 @@ import pytest
 from apollo.memory.models import (
     MANIFEST_SOURCE_KIND,
     Kind,
+    Memory,
+    MemoryInputError,
     ObservationCounts,
     Origin,
     OriginTier,
@@ -23,7 +25,10 @@ from apollo.memory.models import (
     confidence,
     included_manifest_entry,
     manifest_source_ref,
+    parse_kind,
+    parse_scope,
     support,
+    validate_claim,
 )
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
@@ -115,3 +120,66 @@ def test_included_entry_is_the_redaction_containment_pattern() -> None:
         {"source_kind": MANIFEST_SOURCE_KIND, "source_ref": str(memory_id), "included": True}
     ]
     assert MANIFEST_SOURCE_KIND == "memory"  # spec F.6
+
+
+# ---------------------------------------------------------------------------
+# input validation and the read-side view (step 10 PR 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "subject,content,message",
+    [
+        ("", "c", "subject must be non-empty"),
+        ("  \n", "c", "subject must be non-empty"),
+        (None, "c", "subject must be non-empty"),
+        ("s", "", "content must be non-empty"),
+        ("s", 42, "content must be non-empty"),
+        ("s\x00", "c", "subject cannot contain a NUL"),
+        ("s", "secret\x00", "content cannot contain a NUL"),
+    ],
+)
+def test_a_bad_claim_is_refused_without_repeating_it(
+    subject: object, content: object, message: str
+) -> None:
+    with pytest.raises(MemoryInputError, match=message) as exc:
+        validate_claim(subject, content)
+    assert "secret" not in str(exc.value)
+
+
+def test_a_good_claim_is_returned_unchanged() -> None:
+    assert validate_claim(" door code ", "4123\n") == (" door code ", "4123\n")
+
+
+def test_scope_and_kind_are_parsed_or_refused() -> None:
+    assert parse_scope("self") is Scope.SELF
+    assert parse_kind("event") is Kind.EVENT
+    with pytest.raises(MemoryInputError, match="scope is one of self, user"):
+        parse_scope("everyone")
+    with pytest.raises(MemoryInputError, match="kind is one of fact"):
+        parse_kind("feeling")
+
+
+def test_the_view_derives_support_and_confidence_from_counts() -> None:
+    row = {
+        "id": uuid.uuid4(),
+        "scope": "user",
+        "kind": "fact",
+        "subject": "s",
+        "content": "c",
+        "origin_tier": "user_asserted",
+        "origin": "personal",
+        "status": "active",
+        "pinned": False,
+        "created_at": None,
+        "updated_at": None,
+        "last_confirmed_at": None,
+        "superseded_by_id": None,
+        "archived_at": None,
+        "tombstoned_at": None,
+    }
+    memory = Memory.from_row(row, {"asserts": 1, "confirms": 2, "contradicts": 1})
+    assert memory.counts == ObservationCounts(confirms=2, contradicts=1)
+    assert memory.support is Support.CONTESTED
+    assert memory.confidence == 0.55
+    assert Memory.from_row(row, {"asserts": 1}).support is Support.ASSERTED

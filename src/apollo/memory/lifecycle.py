@@ -1,9 +1,12 @@
 """The memory lifecycle: which operation may apply to which status (spec D.1, D.9).
 
-This module is where status transitions are decided. It holds the rules as
-data so the database triggers (migration 0003) and the tests can be checked
-against one table; the operations that execute them arrive with the
-repository.
+This module is where status transitions are decided and made. It holds the
+rules as data, so the database triggers (migration 0003) and the tests can be
+checked against one table, and it holds the operations that execute them: they
+are the only callers of `MemoryRepository`'s writers (an architecture test
+holds that). Each operation runs inside the caller's unit of work and returns
+what it changed; the caller (`apollo.core.memories`) records the audit event in
+the same transaction, because `memory/` may import only `storage/` (spec A.3).
 
 Row-level transitions, per spec D.1 as clarified by D.9:
 
@@ -20,14 +23,33 @@ status; they apply to `active` and `archived` rows only.
 
 from __future__ import annotations
 
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from apollo.errors import ApolloError
-from apollo.memory.models import Status
+from apollo.memory.models import (
+    Kind,
+    Origin,
+    OriginTier,
+    Relation,
+    Scope,
+    SourceKind,
+    Status,
+    validate_claim,
+)
+from apollo.storage.repositories import MemoryRepository
+from apollo.storage.unit_of_work import UnitOfWork
 
 
 class LifecycleError(ApolloError):
     """An operation that the lifecycle does not permit from the row's status."""
+
+
+class MemoryNotFoundError(ApolloError):
+    """No memory has the requested id."""
 
 
 class Operation(StrEnum):
@@ -107,3 +129,184 @@ def check_chain_tombstone(head: Status, predecessors: list[Status]) -> None:
     for status in predecessors:
         if status is not Status.SUPERSEDED:
             raise LifecycleError(f"a chain predecessor must be {Status.SUPERSEDED}, not {status}")
+
+
+# ---------------------------------------------------------------------------
+# operations
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Change:
+    """What one operation changed: ids and enums only, never claim text."""
+
+    operation: Operation
+    memory_id: uuid.UUID
+    status: Status
+    observation_id: uuid.UUID | None = None
+    replacement_id: uuid.UUID | None = None
+
+
+def _locked(repo: MemoryRepository, memory_id: uuid.UUID) -> dict[str, Any]:
+    row = repo.lock(memory_id)
+    if row is None:
+        raise MemoryNotFoundError("no memory has that id")
+    return row
+
+
+def create(
+    uow: UnitOfWork,
+    *,
+    scope: Scope,
+    kind: Kind,
+    subject: str,
+    content: str,
+    origin_tier: OriginTier,
+    origin: Origin,
+    pinned: bool,
+    source_kind: SourceKind,
+    now: datetime,
+    message_id: uuid.UUID | None = None,
+    excerpt: str | None = None,
+) -> Change:
+    """A new active claim and its `asserts` observation (spec D.1: provenance required)."""
+    subject, content = validate_claim(subject, content)
+    repo = MemoryRepository(uow)
+    memory_id = repo.insert_memory(
+        scope=scope,
+        kind=kind,
+        subject=subject,
+        content=content,
+        origin_tier=origin_tier,
+        origin=origin,
+        pinned=pinned,
+        now=now,
+    )
+    observation_id = repo.insert_observation(
+        memory_id=memory_id,
+        relation=Relation.ASSERTS,
+        source_kind=source_kind,
+        message_id=message_id,
+        excerpt=excerpt,
+        now=now,
+    )
+    return Change(Operation.CREATE, memory_id, CREATED_STATUS, observation_id=observation_id)
+
+
+def _evidence(
+    uow: UnitOfWork,
+    operation: Operation,
+    memory_id: uuid.UUID,
+    *,
+    source_kind: SourceKind,
+    now: datetime,
+    message_id: uuid.UUID | None,
+    excerpt: str | None,
+) -> Change:
+    repo = MemoryRepository(uow)
+    status = check(operation, Status(_locked(repo, memory_id)["status"]))
+    relation = Relation.CONFIRMS if operation is Operation.CONFIRM else Relation.CONTRADICTS
+    observation_id = repo.insert_observation(
+        memory_id=memory_id,
+        relation=relation,
+        source_kind=source_kind,
+        message_id=message_id,
+        excerpt=excerpt,
+        now=now,
+    )
+    if operation is Operation.CONFIRM:
+        repo.mark_confirmed(memory_id, now)
+    else:
+        repo.mark_contradicted(memory_id, now)
+    return Change(operation, memory_id, status, observation_id=observation_id)
+
+
+def confirm(
+    uow: UnitOfWork,
+    memory_id: uuid.UUID,
+    *,
+    source_kind: SourceKind,
+    now: datetime,
+    message_id: uuid.UUID | None = None,
+    excerpt: str | None = None,
+) -> Change:
+    """Spec D.6: a `confirms` observation and `last_confirmed_at`; no status change."""
+    return _evidence(
+        uow, Operation.CONFIRM, memory_id,
+        source_kind=source_kind, now=now, message_id=message_id, excerpt=excerpt,
+    )
+
+
+def contradict(
+    uow: UnitOfWork,
+    memory_id: uuid.UUID,
+    *,
+    source_kind: SourceKind,
+    now: datetime,
+    message_id: uuid.UUID | None = None,
+    excerpt: str | None = None,
+) -> Change:
+    """Spec D.6: a `contradicts` observation; never an automatic retraction."""
+    return _evidence(
+        uow, Operation.CONTRADICT, memory_id,
+        source_kind=source_kind, now=now, message_id=message_id, excerpt=excerpt,
+    )
+
+
+def correct(
+    uow: UnitOfWork,
+    memory_id: uuid.UUID,
+    *,
+    content: str,
+    source_kind: SourceKind,
+    now: datetime,
+    message_id: uuid.UUID | None = None,
+    excerpt: str | None = None,
+) -> Change:
+    """Spec D.5: a new active row with the corrected content; the old row superseded.
+
+    scope, kind, subject, origin, origin_tier and pinned carry forward (the
+    subject cannot be corrected, D.9/4). Observations are not copied: the chain
+    is the history.
+    """
+    repo = MemoryRepository(uow)
+    old = _locked(repo, memory_id)
+    check(Operation.CORRECT, Status(old["status"]))
+    created = create(
+        uow,
+        scope=Scope(old["scope"]),
+        kind=Kind(old["kind"]),
+        subject=old["subject"],
+        content=content,
+        origin_tier=OriginTier(old["origin_tier"]),
+        origin=Origin(old["origin"]),
+        pinned=old["pinned"],
+        source_kind=source_kind,
+        message_id=message_id,
+        excerpt=excerpt,
+        now=now,
+    )
+    repo.mark_superseded(memory_id, created.memory_id, now)
+    return Change(
+        Operation.CORRECT,
+        memory_id,
+        Status.SUPERSEDED,
+        observation_id=created.observation_id,
+        replacement_id=created.memory_id,
+    )
+
+
+def archive(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Change:
+    """Spec D.7: reversible and content-preserving."""
+    repo = MemoryRepository(uow)
+    status = check(Operation.ARCHIVE, Status(_locked(repo, memory_id)["status"]))
+    repo.mark_archived(memory_id, now)
+    return Change(Operation.ARCHIVE, memory_id, status)
+
+
+def restore(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Change:
+    """Back to active, with `archived_at` cleared (step 10 decision 8)."""
+    repo = MemoryRepository(uow)
+    status = check(Operation.RESTORE, Status(_locked(repo, memory_id)["status"]))
+    repo.mark_restored(memory_id, now)
+    return Change(Operation.RESTORE, memory_id, status)
