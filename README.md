@@ -45,9 +45,12 @@ pip install -e '.[dev]'
 # CREATEROLE the first time; if it does not have it (common on managed
 # PostgreSQL), `apollo provision` prints the one CREATE ROLE statement a
 # superuser must run, after which provisioning applies the grants itself.
+# The runtime password is read from stdin (a no-echo prompt at a terminal) and
+# hashed client-side into a SCRAM-SHA-256 verifier; the plaintext never appears
+# in a command line, the SQL sent or the server log. Omit --password-stdin for
+# trust/peer auth.
 export APOLLO_ADMIN_DSN="host=127.0.0.1 port=5432 user=apollo_owner dbname=apollo"
-export APOLLO_RUNTIME_PASSWORD="$APOLLO_APP_PASSWORD"
-apollo provision
+printf '%s\n' "$APOLLO_APP_PASSWORD" | apollo provision --password-stdin
 
 # Everything after this point runs as the unprivileged role. Note there is no
 # APOLLO_ADMIN_DSN in the runtime environment.

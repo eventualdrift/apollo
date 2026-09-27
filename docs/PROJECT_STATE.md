@@ -10,6 +10,26 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-09-27): `apollo provision --password` fixed
+
+Supersedes the "Open Apollo bug" item in the M2 checkpoint below, which is otherwise unchanged
+and remains the current checkpoint. Fixed in commit `1ea70b3929420ba386acc5e61f527eeab9b54765`.
+
+- **Cause:** `ALTER ROLE {} PASSWORD %s` sent a bound parameter, which PostgreSQL rejects in a
+  utility statement (`syntax error at or near "$1"`, reproduced on PostgreSQL 16.13).
+- **Fix:** the password is hashed client-side into a SCRAM-SHA-256 verifier with libpq's
+  `PQencryptPasswordConn` (psycopg 3.3.6 `pgconn.encrypt_password`), and only the verifier is
+  sent, as `sql.Literal`. The plaintext is not in the statement text or a statement log.
+- **CLI:** `--password VALUE` is replaced by `--password-stdin`: the first line of a pipe, or a
+  no-echo prompt at a terminal. Omitting it still means no password (trust/peer auth).
+  `APOLLO_RUNTIME_PASSWORD` is no longer read, and `apollo provision` refuses to run while it is
+  set. Empty and NUL-containing passwords are refused before any role statement runs.
+- **Tests:** 17 new (10 integration, 7 unit). The integration tests recompute the SCRAM keys from
+  the stored salt, check that no executed statement or parameter holds the plaintext, replace an
+  existing password, create roles with and without one, log in over SCRAM and drive the CLI's
+  stdin path.
+- Nothing else changed: no M3 work, no brain accepted, and the M2 boundaries below still hold.
+
 ## Current checkpoint: M2 measurement signed off by Janu; no brain accepted (2026-09-27)
 
 Supersedes the "M2 remains unaccepted" boundary of the checkpoints below, whose bodies are
@@ -84,6 +104,9 @@ Deterministic failures — GPT-OSS: per_001, 014, 017, 019, 022, 023, 024. Qwen:
 - **GPT-OSS instability:** 5 of 30 deterministic results changed between two runs with the same
   pinned inputs. One GPT-OSS run is a sample, not a fixed point; 4 of the 7 cases where the brains
   differ (per_001, 002, 005, 019) depend on which GPT-OSS run is read.
+  - *Correction (2026-09-27):* "4 of the 7 cases where the brains differ" should read "4 of the
+    8" (GPT-OSS-only: per_001, 014, 017, 019; Qwen-only: per_002, 005, 007, 025). The sentence
+    above is left as signed off.
 - **GPT-OSS-only failures:**
   - per_001: max_words only (161 against 160); answers first, no evaluative opener. Real by the
     check, marginal; 765544f1 passed it.

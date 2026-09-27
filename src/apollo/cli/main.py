@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import sys
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import TextIO
 
 from apollo.brains.registry import BrainRegistry
 from apollo.config import load_config
@@ -38,6 +41,32 @@ def _service(config) -> tuple[Database, TurnService]:  # type: ignore[no-untyped
     return db, service
 
 
+def _read_runtime_password(
+    from_stdin: bool, stdin: TextIO, environ: Mapping[str, str]
+) -> str | None:
+    """The runtime role password, never taken from the command line.
+
+    A command-line value lands in shell history and the process list. With
+    `--password-stdin`, a pipe supplies the first line; a terminal gets a
+    no-echo prompt. Without it there is no password (trust/peer auth).
+    """
+    if "APOLLO_RUNTIME_PASSWORD" in environ:
+        # The variable used to set the password. Refuse rather than silently
+        # provisioning without one for a deployment that still exports it.
+        raise ConfigError(
+            "APOLLO_RUNTIME_PASSWORD is no longer read; unset it and pipe the password "
+            "to `apollo provision --password-stdin` instead"
+        )
+    if not from_stdin:
+        return None
+    if stdin.isatty():
+        try:
+            return getpass.getpass("runtime role password: ")
+        except EOFError:
+            return ""  # provisioning refuses an empty password
+    return stdin.readline().rstrip("\r\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apollo")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -48,8 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         help="migrate, then create and grant the least-privilege runtime role "
              "(needs APOLLO_ADMIN_DSN)",
     )
-    p_prov.add_argument("--password", default=None,
-                        help="runtime role password; omit for trust/peer auth")
+    p_prov.add_argument("--password-stdin", action="store_true",
+                        help="read the runtime role password from stdin (prompted without "
+                             "echo at a terminal); omit for trust/peer auth")
     sub.add_parser("doctor", help="report the runtime role's actual privileges")
     p_gate = sub.add_parser("gate1", help="run Gate 1 protocol checks against a brain alias")
     p_gate.add_argument("alias", nargs="?", default="brain.default")
@@ -152,11 +182,17 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+        password = None
+        if args.command == "provision":
+            try:
+                password = _read_runtime_password(args.password_stdin, sys.stdin, os.environ)
+            except ConfigError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
         admin = Database(config.admin_dsn)
         applied = admin.migrate()
         print("\n".join(applied) if applied else "schema already up to date")
         if args.command == "provision":
-            password = args.password or os.environ.get("APOLLO_RUNTIME_PASSWORD")
             try:
                 with admin.connect() as conn:
                     created = provision_runtime_role(conn, config.runtime_role, password=password)
