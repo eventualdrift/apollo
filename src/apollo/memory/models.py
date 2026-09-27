@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
+
+from apollo.errors import ApolloError
 
 
 class Scope(StrEnum):
@@ -149,3 +152,96 @@ def included_manifest_entry(memory_id: uuid.UUID) -> list[dict[str, Any]]:
             "included": True,
         }
     ]
+
+
+class MemoryInputError(ApolloError):
+    """A claim that cannot be stored as given. The message never repeats the claim."""
+
+
+def validate_claim(subject: object, content: object) -> tuple[str, str]:
+    """Check a claim before any SQL runs, so database errors stay a backstop.
+
+    A database CHECK or type error can echo the failing row, text included, into
+    the exception and the server log; refusing here keeps the claim out of both.
+    """
+    return _claim_text("subject", subject), _claim_text("content", content)
+
+
+def _claim_text(name: str, value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MemoryInputError(f"a memory {name} must be non-empty text")
+    if "\x00" in value:
+        raise MemoryInputError(f"a memory {name} cannot contain a NUL character")
+    return value
+
+
+def parse_scope(value: str) -> Scope:
+    try:
+        return Scope(value)
+    except ValueError:
+        raise MemoryInputError(
+            f"a memory scope is one of {', '.join(s.value for s in Scope)}"
+        ) from None
+
+
+def parse_kind(value: str) -> Kind:
+    try:
+        return Kind(value)
+    except ValueError:
+        raise MemoryInputError(
+            f"a memory kind is one of {', '.join(k.value for k in Kind)}"
+        ) from None
+
+
+@dataclass(frozen=True)
+class Memory:
+    """One claim-version as read back, with its support and confidence derived."""
+
+    id: uuid.UUID
+    scope: Scope
+    kind: Kind
+    subject: str | None
+    content: str | None
+    origin_tier: OriginTier
+    origin: Origin
+    status: Status
+    pinned: bool
+    created_at: datetime
+    updated_at: datetime
+    last_confirmed_at: datetime | None
+    superseded_by_id: uuid.UUID | None
+    archived_at: datetime | None
+    tombstoned_at: datetime | None
+    counts: ObservationCounts
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any], counts: dict[str, int]) -> Memory:
+        return cls(
+            id=row["id"],
+            scope=Scope(row["scope"]),
+            kind=Kind(row["kind"]),
+            subject=row["subject"],
+            content=row["content"],
+            origin_tier=OriginTier(row["origin_tier"]),
+            origin=Origin(row["origin"]),
+            status=Status(row["status"]),
+            pinned=row["pinned"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            last_confirmed_at=row["last_confirmed_at"],
+            superseded_by_id=row["superseded_by_id"],
+            archived_at=row["archived_at"],
+            tombstoned_at=row["tombstoned_at"],
+            counts=ObservationCounts(
+                confirms=counts.get(Relation.CONFIRMS, 0),
+                contradicts=counts.get(Relation.CONTRADICTS, 0),
+            ),
+        )
+
+    @property
+    def support(self) -> Support:
+        return support(self.counts)
+
+    @property
+    def confidence(self) -> float:
+        return confidence(self.origin_tier, self.counts)
