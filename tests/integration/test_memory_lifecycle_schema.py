@@ -8,6 +8,7 @@ or a hand-written UPDATE — can produce a state the lifecycle forbids.
 from __future__ import annotations
 
 import itertools
+import threading
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -257,8 +258,22 @@ def _supersede(cur: psycopg.Cursor[Any], row: uuid.UUID, by: uuid.UUID) -> None:
 
 def test_an_active_row_cannot_carry_a_successor(db: Database) -> None:
     a, b = create(db), create(db)
-    with db.connect() as conn, conn.cursor() as cur, rejected("wrong successor"):
+    with db.connect() as conn, conn.cursor() as cur, rejected("set only by a correction"):
         cur.execute("UPDATE memory SET superseded_by_id = %s WHERE id = %s", (b, a))
+
+
+@pytest.mark.parametrize("source", [Status.ACTIVE, Status.ARCHIVED])
+def test_a_tombstone_cannot_attach_a_successor(db: Database, source: Status) -> None:
+    """Codex PR #8: a successor set while tombstoning would hang a dead row on a live head."""
+    row, _ = in_status(db, source)
+    head = create(db)
+    with db.connect() as conn, conn.cursor() as cur, rejected("set only by a correction"):
+        cur.execute(
+            "UPDATE memory SET status = 'tombstoned', subject = NULL, content = NULL,"
+            " tombstoned_at = %s, superseded_by_id = %s WHERE id = %s",
+            (NOW, head, row),
+        )
+    assert status_of(db, row) == source
 
 
 def test_a_row_cannot_supersede_itself(db: Database) -> None:
@@ -501,6 +516,19 @@ def test_an_excerpt_cannot_be_cleared_while_its_memory_is_live(db: Database) -> 
         cur.execute("UPDATE memory_observation SET excerpt = NULL WHERE memory_id = %s", (row,))
 
 
+def test_a_tombstone_that_leaves_an_excerpt_cannot_commit(db: Database) -> None:
+    """Codex PR #8: forgetting the excerpt update must not quietly keep the words."""
+    row = create(db, excerpt="the words")
+    with (
+        rejected("clears every observation excerpt"),
+        db.connect() as conn,
+        conn.transaction(),  # the deferred check fires as this commits
+        conn.cursor() as cur,
+    ):
+        tombstone(cur, row)
+    assert status_of(db, row) == "active"
+
+
 def test_a_tombstone_clears_an_excerpt_and_cannot_rewrite_it(db: Database) -> None:
     row = create(db, excerpt="the words")
     with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
@@ -652,7 +680,7 @@ def test_the_migration_installs_its_rules(db: Database) -> None:
     assert {
         ("memory", "memory_lifecycle_guard"),
         ("memory", "memory_requires_assertion"),
-        ("memory", "memory_chain_tombstoned_together"),
+        ("memory", "memory_tombstone_complete"),
         ("memory_observation", "observation_guard"),
         ("model_invocation", "invocation_hash_guard"),
     } <= triggers
@@ -661,3 +689,110 @@ def test_the_migration_installs_its_rules(db: Database) -> None:
         "memory_superseded_by_uq",
         "invocation_redaction_ck",
     }
+
+
+# ---------------------------------------------------------------------------
+# concurrency: a tombstone serialises with evidence and corrections (Codex PR #8)
+# ---------------------------------------------------------------------------
+
+
+def _in_background(db: Database, statements: list[tuple[str, tuple[Any, ...]]]) -> dict[str, Any]:
+    """Run statements in one transaction on a thread; report whether it waited and how it ended."""
+    outcome: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+                for query, params in statements:
+                    cur.execute(query, params)
+            outcome["result"] = "committed"
+        except psycopg.errors.RestrictViolation as exc:
+            outcome["result"] = "refused"
+            outcome["message"] = str(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(1.0)
+    outcome["waited"] = thread.is_alive()
+    outcome["thread"] = thread
+    return outcome
+
+
+TOMBSTONE_ALL = [
+    (
+        "UPDATE memory SET status = 'tombstoned', subject = NULL, content = NULL,"
+        " tombstoned_at = now() WHERE id = %s",
+        (),
+    ),
+    ("UPDATE memory_observation SET excerpt = NULL WHERE memory_id = %s", ()),
+]
+
+
+def _tombstone_statements(row: uuid.UUID) -> list[tuple[str, tuple[Any, ...]]]:
+    return [(query, (row,)) for query, _ in TOMBSTONE_ALL]
+
+
+def test_evidence_added_first_is_cleared_by_a_waiting_tombstone(db: Database) -> None:
+    row = create(db)
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        _observe(cur, row, relation="confirms", excerpt="late words")
+        background = _in_background(db, _tombstone_statements(row))
+        assert background["waited"], "the tombstone must wait for the open insert"
+    background["thread"].join(5)
+    assert background["result"] == "committed"
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT excerpt FROM memory_observation WHERE memory_id = %s", (row,))
+        assert [r["excerpt"] for r in cur.fetchall()] == [None, None]
+
+
+def test_evidence_added_during_a_tombstone_is_refused(db: Database) -> None:
+    row = create(db)
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        for query, params in _tombstone_statements(row):
+            cur.execute(query, params)
+        background = _in_background(
+            db,
+            [
+                (
+                    "INSERT INTO memory_observation (id, memory_id, relation, source_kind,"
+                    " excerpt, observed_at, created_at) VALUES (gen_random_uuid(), %s,"
+                    " 'confirms', 'user_direct_entry', 'late words', now(), now())",
+                    (row,),
+                )
+            ],
+        )
+        assert background["waited"], "the insert must wait for the open tombstone"
+    background["thread"].join(5)
+    assert background["result"] == "refused"
+    assert "tombstoned memory" in background["message"]
+
+
+def test_a_correction_first_makes_a_waiting_tombstone_of_its_head_fail(db: Database) -> None:
+    old, head = create(db), create(db)
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        _supersede(cur, old, head)
+        background = _in_background(db, [(TOMBSTONE_ALL[0][0], (head,))])
+        assert background["waited"], "the tombstone must wait for the open correction"
+    background["thread"].join(5)
+    assert background["result"] == "refused"
+    assert "every predecessor" in background["message"]
+    assert (status_of(db, old), status_of(db, head)) == ("superseded", "active")
+
+
+def test_a_correction_during_a_tombstone_of_its_head_is_refused(db: Database) -> None:
+    old, head = create(db), create(db)
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.execute(TOMBSTONE_ALL[0][0], (head,))
+        background = _in_background(
+            db,
+            [
+                (
+                    "UPDATE memory SET status = 'superseded', superseded_by_id = %s WHERE id = %s",
+                    (head, old),
+                )
+            ],
+        )
+        assert background["waited"], "the correction must wait for the open tombstone"
+    background["thread"].join(5)
+    assert background["result"] == "refused"
+    assert (status_of(db, old), status_of(db, head)) == ("active", "tombstoned")

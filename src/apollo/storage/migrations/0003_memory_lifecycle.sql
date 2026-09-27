@@ -56,6 +56,13 @@ BEGIN
             USING ERRCODE = 'restrict_violation';
     END IF;
 
+    -- A successor is set only by a correction, never alongside another change.
+    IF OLD.superseded_by_id IS NULL AND NEW.superseded_by_id IS NOT NULL
+       AND NOT (OLD.status = 'active' AND NEW.status = 'superseded') THEN
+        RAISE EXCEPTION 'apollo: memory.superseded_by_id is set only by a correction'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+
     -- Exactly the row transitions in apollo.memory.lifecycle.ROW_TRANSITIONS.
     IF NEW.status IS DISTINCT FROM OLD.status
        AND (OLD.status, NEW.status) NOT IN (
@@ -84,10 +91,12 @@ BEGIN
     END IF;
 
     -- Correct: the replacement must be a live chain head other than this row.
-    -- Pointing only at an active head is also what rules out cycles.
+    -- Pointing only at an active head is also what rules out cycles. FOR SHARE
+    -- serialises this with a concurrent tombstone of that head: whichever
+    -- commits second sees the other and is refused.
     IF OLD.status = 'active' AND NEW.status = 'superseded' THEN
         SELECT status, superseded_by_id INTO succ_status, succ_next
-          FROM memory WHERE id = NEW.superseded_by_id;
+          FROM memory WHERE id = NEW.superseded_by_id FOR SHARE;
         IF NEW.superseded_by_id = NEW.id OR succ_status IS DISTINCT FROM 'active'
            OR succ_next IS NOT NULL THEN
             RAISE EXCEPTION 'apollo: a memory is superseded only by an active chain head '
@@ -99,7 +108,7 @@ BEGIN
     -- A superseded row is tombstoned only with its chain, after its successor
     -- (spec D.9/1). The deferred check below makes the whole chain go together.
     IF OLD.status = 'superseded' AND NEW.status = 'tombstoned' THEN
-        SELECT status INTO succ_status FROM memory WHERE id = NEW.superseded_by_id;
+        SELECT status INTO succ_status FROM memory WHERE id = NEW.superseded_by_id FOR SHARE;
         IF succ_status IS DISTINCT FROM 'tombstoned' THEN
             RAISE EXCEPTION 'apollo: a superseded memory is tombstoned only with its chain, '
                             'after its successor'
@@ -132,10 +141,16 @@ CREATE CONSTRAINT TRIGGER memory_requires_assertion AFTER INSERT ON memory
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW EXECUTE FUNCTION apollo_memory_requires_assertion();
 
--- Chain-wide tombstone (spec D.9/1): at commit, a tombstoned row has no
--- predecessor left untombstoned. Applied at each link, this covers the chain.
-CREATE FUNCTION apollo_memory_chain_tombstoned_together() RETURNS trigger LANGUAGE plpgsql AS $$
+-- A tombstone is complete by commit (spec D.7, D.9/1): the row's observation
+-- excerpts are cleared, and no predecessor in its chain is left untombstoned.
+-- Applied at each link, the second rule covers the whole chain.
+CREATE FUNCTION apollo_memory_tombstone_complete() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    IF EXISTS (SELECT 1 FROM memory_observation
+                WHERE memory_id = NEW.id AND excerpt IS NOT NULL) THEN
+        RAISE EXCEPTION 'apollo: a tombstone clears every observation excerpt of its memory'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
     IF EXISTS (SELECT 1 FROM memory
                 WHERE superseded_by_id = NEW.id AND status <> 'tombstoned') THEN
         RAISE EXCEPTION 'apollo: a memory is tombstoned together with every predecessor in its chain'
@@ -145,11 +160,11 @@ BEGIN
 END;
 $$;
 
-CREATE CONSTRAINT TRIGGER memory_chain_tombstoned_together AFTER UPDATE ON memory
+CREATE CONSTRAINT TRIGGER memory_tombstone_complete AFTER UPDATE ON memory
     DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
     WHEN (NEW.status = 'tombstoned' AND OLD.status IS DISTINCT FROM 'tombstoned')
-    EXECUTE FUNCTION apollo_memory_chain_tombstoned_together();
+    EXECUTE FUNCTION apollo_memory_tombstone_complete();
 
 -- ---------------------------------------------------------------------------
 -- memory_observation
@@ -159,7 +174,10 @@ CREATE FUNCTION apollo_observation_guard() RETURNS trigger LANGUAGE plpgsql AS $
 DECLARE
     parent_status text;
 BEGIN
-    SELECT status INTO parent_status FROM memory WHERE id = NEW.memory_id;
+    -- FOR SHARE serialises this with a concurrent tombstone of the parent: the
+    -- foreign key's own KEY SHARE lock does not conflict with an UPDATE of
+    -- non-key columns, so without it both could commit.
+    SELECT status INTO parent_status FROM memory WHERE id = NEW.memory_id FOR SHARE;
 
     IF TG_OP = 'INSERT' THEN
         IF parent_status = 'tombstoned' THEN
