@@ -131,6 +131,47 @@ def test_dropped_history_is_recorded_in_the_manifest() -> None:
     assert dropped[0]["source_ref"] == "m0"
 
 
+def test_an_oversized_message_ends_the_history_instead_of_leaving_a_gap() -> None:
+    """Spec F.2: truncated from the oldest end, so nothing older survives a dropped message."""
+    history = [
+        HistoryMessage("m0", "user", "old question"),
+        HistoryMessage("m1", "apollo", "x" * 6000),  # too big for what's left
+        HistoryMessage("m2", "user", "q2"),
+        HistoryMessage("m3", "apollo", "a2"),
+        HistoryMessage("m4", "user", "q3"),
+        HistoryMessage("m5", "apollo", "a3"),
+    ]
+    bundle = compile_context(make(history=history, budget=budget(total=4800, identity_cap=4000)))
+    assert [b.source_ref for b in bundle.blocks_in(Region.HISTORY)] == ["m2", "m3", "m4", "m5"]
+    dropped = [e["source_ref"] for e in bundle.manifest if not e["included"]]
+    assert dropped == ["m0", "m1"]  # m0 fits, but it is older than the gap
+
+
+def test_the_floor_needs_the_last_two_exchanges_not_just_four_messages() -> None:
+    history = [
+        HistoryMessage("m0", "user", "old question"),
+        HistoryMessage("m1", "apollo", "old answer"),
+        HistoryMessage("m2", "user", "x" * 6000),  # one of the newest four
+        HistoryMessage("m3", "apollo", "a2"),
+        HistoryMessage("m4", "user", "q3"),
+        HistoryMessage("m5", "apollo", "a3"),
+    ]
+    with pytest.raises(ContextOverflowError, match="newest 4 history messages"):
+        compile_context(make(history=history, budget=budget(total=4800, identity_cap=4000)))
+
+
+def test_the_floor_check_compares_messages_not_counts() -> None:
+    from apollo.context.budget import assert_conversation_floor
+
+    history = ["m0", "m1", "m2", "m3", "m4"]
+    assert_conversation_floor(["m1", "m2", "m3", "m4"], history)
+    assert_conversation_floor(["m0", "m1"], ["m0", "m1"])  # short history: all of it
+    assert_conversation_floor([], [])
+    for kept in (["m0", "m1", "m3", "m4"], ["m0", "m1", "m2", "m3"], ["m2", "m3", "m4"]):
+        with pytest.raises(ContextOverflowError, match="conversation floor"):
+            assert_conversation_floor(kept, history)
+
+
 def test_manifest_carries_references_never_content() -> None:
     bundle = compile_context(make("my door code is 4123",
                                   history=[HistoryMessage("m1", "user", "secret history")]))

@@ -144,7 +144,9 @@ def _compile_reply(req: CompileRequest) -> ContextBundle:
         for m in req.history
     ]
     kept, dropped = _fit_history(history_blocks, allowance)
-    assert_conversation_floor(len(kept), len(history_blocks))
+    assert_conversation_floor(
+        [b.source_ref for b in kept], [b.source_ref for b in history_blocks]
+    )
 
     ordered = [*policy, *data, *kept, request_block]
     return _finalise(req, ordered, dropped, identity=req.identity)
@@ -173,18 +175,20 @@ def _compile_memory_proposal(req: CompileRequest) -> ContextBundle:
 def _fit_history(
     blocks: list[ContextBlock], allowance: int
 ) -> tuple[list[ContextBlock], list[tuple[ContextBlock, str]]]:
-    kept: list[ContextBlock] = []
-    dropped: list[tuple[ContextBlock, str]] = []
+    """Keep the newest contiguous run of history that fits (spec F.2).
+
+    Truncation is from the oldest end: walking newest first, the first message
+    that doesn't fit ends the history, and it and everything older are dropped.
+    Skipping it and keeping older ones would leave a gap the model can't see.
+    """
     used = 0
-    for block in reversed(blocks):  # newest first, so the oldest are dropped
-        if used + block.token_estimate <= allowance:
-            kept.append(block)
-            used += block.token_estimate
-        else:
-            dropped.append((block, "budget:conversation"))
-    kept.reverse()
-    dropped.reverse()
-    return kept, dropped
+    cut = len(blocks)  # index of the oldest kept block
+    for index in range(len(blocks) - 1, -1, -1):
+        if used + blocks[index].token_estimate > allowance:
+            break
+        used += blocks[index].token_estimate
+        cut = index
+    return blocks[cut:], [(block, "budget:conversation") for block in blocks[:cut]]
 
 
 def _block(
