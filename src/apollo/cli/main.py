@@ -21,7 +21,9 @@ from apollo.errors import ApolloError, ConfigError
 from apollo.logging_setup import configure_logging
 from apollo.storage.db import (
     Database,
+    LogSettings,
     RoleProvisioningError,
+    describe_log_settings,
     describe_role_privileges,
     provision_runtime_role,
 )
@@ -200,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
                 with admin.connect() as conn:
                     created = provision_runtime_role(conn, config.runtime_role, password=password)
                     facts = describe_role_privileges(conn, config.runtime_role)
+                    catalogue = describe_log_settings(conn, role=config.runtime_role)
             except RoleProvisioningError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -207,6 +210,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  superuser:              {facts.is_superuser}")
             print(f"  owns audit_event:       {facts.owns_audit_event}")
             print(f"  audit_event privileges: {', '.join(facts.audit_event_privileges)}")
+            print(f"  can create temp tables: {facts.can_create_temp}")
+            # Advice, not a failure: only a superuser can set these. Read as the
+            # runtime role, since a setting on that role overrides the database's.
+            log_settings, problem = _runtime_log_settings(config)
+            if log_settings is None:
+                print(f"Couldn't check the PostgreSQL log settings as {config.runtime_role}"
+                      f" ({problem}). To be sure, as a superuser, run:")
+                for statement in catalogue.statements_to_ensure():
+                    print(f"  {statement}")
+            elif not log_settings.in_effect:
+                print(f"PostgreSQL log settings not in effect for {config.runtime_role}; a refused"
+                      " row's text can reach the server log. As a superuser, run:")
+                for statement in log_settings.missing():
+                    print(f"  {statement}")
             if not facts.is_least_privilege:
                 print("  WARNING: runtime role is not least-privilege", file=sys.stderr)
                 return 1
@@ -218,6 +235,17 @@ def main(argv: list[str] | None = None) -> int:
             facts = describe_role_privileges(conn, config.runtime_role)
         for line in facts.as_lines():
             print(line)
+        # Read as the runtime role even when the admin DSN is set: a setting on
+        # that role overrides the database's for its sessions only.
+        log_settings, problem = _runtime_log_settings(config)
+        if log_settings is None:
+            print(f"log settings: UNCHECKED ({problem})")
+        else:
+            for line in log_settings.as_lines():
+                print(line)
+            print("log settings:", "OK" if log_settings.in_effect else "NOT IN EFFECT")
+            for statement in [] if log_settings.in_effect else log_settings.missing():
+                print(f"  fix, as a superuser: {statement}")
         print("least privilege:", "OK" if facts.is_least_privilege else "VIOLATED")
         return 0 if facts.is_least_privilege else 1
 
@@ -585,6 +613,20 @@ def _run_gate1(config, alias: str, *, eval_surface: bool) -> int:  # type: ignor
         return 1
     print("\n".join(report.as_lines()))
     return 0 if report.passed else 1
+
+
+def _runtime_log_settings(config) -> tuple[LogSettings | None, str]:  # type: ignore[no-untyped-def]
+    """The log settings the runtime role's own sessions get, or why they couldn't be read."""
+    try:
+        with Database(config.database_dsn).connect() as conn:
+            settings = describe_log_settings(conn, role=config.runtime_role)
+    except Exception as exc:  # the kind only: a connection error's text can quote the DSN
+        return None, f"could not connect with APOLLO_DATABASE_DSN: {type(exc).__name__}"
+    if settings.session_role != config.runtime_role:
+        return None, "APOLLO_DATABASE_DSN does not connect as the runtime role"
+    if not settings.readable:
+        return None, "the runtime role cannot read them"
+    return settings, ""
 
 
 def _emit(result) -> int:  # type: ignore[no-untyped-def]

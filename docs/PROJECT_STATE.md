@@ -10,6 +10,61 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-09-27): step 10 (memory core) complete — the database mechanics are proven
+
+Supersedes the "step 10 in progress" update below, whose body is preserved unchanged; both carried
+items were done in #11. The M2 checkpoint further below is unchanged and remains the current
+checkpoint: no brain is accepted.
+
+**Merged:** §D.9 clarifications, memory types and lifecycle rules (#7); migration
+`0003_memory_lifecycle.sql` (#8) and `0004_invocation_manifest_shape.sql` (#9); direct entry with
+create, confirm, contradict, correct, archive and restore (#10); tombstone, hash redaction and
+`bundle_hash` removed from audit and logs (#11); the `apollo memory` CLI (#12); the sentinel sweep,
+provisioning hardening and these docs (step 10 PR 6).
+
+**What step 10 proves, and what it doesn't yet.** Step 10 proves the database mechanics of the
+memory lifecycle and of forgetting: the lifecycle rules are held by triggers as well as code, a
+tombstone removes the claim from every version of a chain (subject, content, the derived search
+vector and every excerpt), redacts the hashes of every invocation whose manifest included any
+version, and records one audit event per version, and concurrent tombstones and corrections
+serialise without deadlock. The sweep test finds the claim afterwards only in its source message.
+That is not the whole of the O.1 items it serves, because nothing renders a memory yet:
+- **O.1/19** (hash redaction) closes at **step 11**, when real reply invocations first carry memory
+  manifest entries. Step 10 proves it on hand-built invocations.
+- **O.1/18** (tombstone scope, both directions) closes across **steps 11–13**: retrieval results and
+  rendered MEMORY blocks arrive at step 11, proposal text at step 12, and replay of a tombstoned
+  source at step 13. The sweep test is written to cover them as they arrive: it enumerates columns
+  live and already reads a rendered reply bundle and a persona run record.
+- **O.1/17** (supersession preserves replay) closes at **step 13**, with replay. Step 10 proves the
+  supersession half: the old row keeps its content, with its successor linked.
+
+**Decisions recorded:**
+- A memory's subject can't be corrected (§D.9): `correct` replaces the content only, and the new
+  version keeps scope, kind, subject, origin and origin tier (enforced by `0003`). To change a
+  subject, forget the memory and add a new one.
+- The retrieval notice still says "Apollo has no memory store in this build"
+  (`context/compiler.py`). That is knowingly stale from step 10 until step 11 replaces the
+  RETRIEVAL_NOTICE block; changing it now would change every compiled bundle hash and the golden
+  bundles for no behavioural gain.
+- Deletion is logical, not physical, and the README's "Deleting a memory" says what a tombstone
+  does not reach: the source message, Apollo's replies, retrieval queries (from step 11),
+  PostgreSQL's dead row versions, WAL and backups, and the server log.
+
+**Provisioning:** `apply_grants` revokes `TEMPORARY` on the Apollo database from `PUBLIC` and the
+runtime role, and least privilege now requires it (`apollo doctor` and `apollo provision` check
+it). `log_error_verbosity = terse` and `log_min_error_statement = panic` are documented next to
+provisioning; only a superuser can set them, so `apollo provision` and `apollo doctor` check them
+as the runtime role (a setting on that role overrides the database's) and print the statements
+that fix them while they are not in effect. Existing deployments should re-run
+`apollo provision` to drop TEMP.
+
+**Backlog, as triaged by Janu:**
+- Right after step 10 (one prompt from Janu for the batch): findings 4 (the history gap: stop at the
+  first message that doesn't fit), 5, 6 and 12 of the old repo review; and the migration runner
+  should store a checksum per applied file and refuse to run on a mismatch.
+- During step 11 design: findings 1 and 7.
+- Step 12: finding 15 (a CHECK on `memory_proposal.kind`).
+
 ## Update (2026-09-27): step 10 in progress — carried items and backlog
 
 Step 10 (memory core) is under way. Merged so far: spec §D.9 clarifications and the memory types

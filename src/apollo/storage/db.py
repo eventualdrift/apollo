@@ -8,6 +8,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from psycopg import sql
@@ -111,6 +112,14 @@ _STATE_TABLES = (
 )
 
 
+def _current_database(conn: psycopg.Connection[Any]) -> str:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT current_database() AS name")
+        row = cur.fetchone()
+    assert row is not None
+    return str(row["name"])
+
+
 def apply_grants(conn: psycopg.Connection[DictRow], role: str) -> None:
     """Grant the runtime role exactly what Apollo needs, and revoke the rest.
 
@@ -143,6 +152,13 @@ def apply_grants(conn: psycopg.Connection[DictRow], role: str) -> None:
         # Migrations run as the owner; the runtime only needs to see what applied.
         cur.execute(sql.SQL("REVOKE ALL ON schema_migration FROM {}").format(ident))
         cur.execute(sql.SQL("GRANT SELECT ON schema_migration TO {}").format(ident))
+        # No temporary tables. A session-private table of the same name as an
+        # Apollo table is what an unpinned search_path would resolve first; the
+        # lifecycle functions pin theirs, and withholding TEMP closes the rest.
+        # Every role holds TEMP through PUBLIC by default, so revoke it there.
+        database = sql.Identifier(_current_database(conn))
+        cur.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(database))
+        cur.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM {}").format(database, ident))
 
 
 def provision_runtime_role(
@@ -202,7 +218,8 @@ def provision_runtime_role(
         raise RoleProvisioningError(
             f"role {role!r} is not least-privilege after provisioning "
             f"(superuser={facts.is_superuser}, owns_audit_event={facts.owns_audit_event}, "
-            f"audit_event={list(facts.audit_event_privileges)}). "
+            f"audit_event={list(facts.audit_event_privileges)}, "
+            f"can_create_temp={facts.can_create_temp}). "
             "Apollo must not run as a role that can modify its own audit stream."
         )
     log.info("provision.runtime_role", extra={"status": "created" if created else "updated"})
@@ -219,6 +236,7 @@ class RolePrivileges:
     audit_event_owner: str
     owns_audit_event: bool
     audit_event_privileges: tuple[str, ...]
+    can_create_temp: bool
 
     @property
     def is_least_privilege(self) -> bool:
@@ -226,6 +244,7 @@ class RolePrivileges:
             not self.is_superuser
             and not self.owns_audit_event
             and sorted(self.audit_event_privileges) == ["INSERT", "SELECT"]
+            and not self.can_create_temp
         )
 
     def as_lines(self) -> list[str]:
@@ -255,6 +274,12 @@ def describe_role_privileges(conn: psycopg.Connection[DictRow], role: str) -> Ro
             (role,),
         )
         audit_privileges = sorted(r["privilege_type"] for r in cur.fetchall())
+        cur.execute(
+            "SELECT has_database_privilege(%s, current_database(), 'TEMPORARY') AS temp",
+            (role,),
+        )
+        temp_row = cur.fetchone()
+        assert temp_row is not None
     return RolePrivileges(
         is_superuser=bool(row["rolsuper"]),
         can_create_db=bool(row["rolcreatedb"]),
@@ -262,4 +287,132 @@ def describe_role_privileges(conn: psycopg.Connection[DictRow], role: str) -> Ro
         audit_event_owner=str(owner),
         owns_audit_event=owner == role,
         audit_event_privileges=tuple(audit_privileges),
+        can_create_temp=bool(temp_row["temp"]),
+    )
+
+
+#: The server log settings that keep claim text out of PostgreSQL's own log.
+#: A refused row is quoted in an error's DETAIL ("Failing row contains (...)"),
+#: which `terse` omits, and `log_min_error_statement` would log the statement
+#: that failed, which `panic` stops short of. Both are superuser settings, set
+#: per database: ALTER DATABASE <db> SET <name> = '<value>'.
+LOG_SETTINGS: tuple[tuple[str, str], ...] = (
+    ("log_error_verbosity", "terse"),
+    ("log_min_error_statement", "panic"),
+)
+
+
+@dataclass(frozen=True)
+class LogSettings:
+    """The log settings on this database, for one role.
+
+    `values` are what the reading session got, so they are the role's effective
+    values only when that session is the role's own (`session_role == role`): a setting on
+    the role (`ALTER ROLE ... SET`) overrides the database's for its sessions
+    and nobody else's. The database and role settings themselves come from the
+    catalogue, which any role can read, so the statements built from them are
+    right whichever session read them. None in `values` means unreadable.
+    """
+
+    database: str
+    role: str
+    session_role: str
+    values: dict[str, str | None]
+    database_values: dict[str, str]
+    #: (setting, set only for this database, value) for each `ALTER ROLE role SET`.
+    role_overrides: tuple[tuple[str, bool, str], ...]
+
+    @property
+    def readable(self) -> bool:
+        return all(value is not None for value in self.values.values())
+
+    @property
+    def in_effect(self) -> bool:
+        return all(self.values.get(name) == want for name, want in LOG_SETTINGS)
+
+    def missing(self) -> list[str]:
+        """The statements a superuser must run, for each setting not in effect in this session."""
+        wrong = {name for name, want in LOG_SETTINGS if self.values.get(name) != want}
+        return self._statements(wrong)
+
+    def statements_to_ensure(self) -> list[str]:
+        """The statements that make both settings certain for the role, from the catalogue alone."""
+        return self._statements({name for name, _ in LOG_SETTINGS})
+
+    def _statements(self, names: set[str]) -> list[str]:
+        database, role = _quote_ident(self.database), _quote_ident(self.role)
+        statements = []
+        for name, want in LOG_SETTINGS:
+            if name not in names:
+                continue
+            for setting, in_database, value in self.role_overrides:
+                if setting == name and value != want:
+                    scope = f" IN DATABASE {database}" if in_database else ""
+                    statements.append(f"ALTER ROLE {role}{scope} RESET {name};")
+            if self.database_values.get(name) != want:
+                statements.append(f"ALTER DATABASE {database} SET {name} = '{want}';")
+        return statements
+
+    def as_lines(self) -> list[str]:
+        return [
+            f"{name}: {self.values.get(name) or 'unreadable'} (want {want})"
+            for name, want in LOG_SETTINGS
+        ]
+
+
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def describe_log_settings(conn: psycopg.Connection[DictRow], *, role: str) -> LogSettings:
+    """Read the log settings this session started with, and those set for `role`.
+
+    A per-database or per-role setting applies to sessions that start after it
+    is set, and `apollo provision` and `apollo doctor` each open a fresh
+    connection. Only a session of `role` itself sees what `role`'s sessions
+    get; `LogSettings.session_role` says whose session this was.
+    """
+    names = [name for name, _ in LOG_SETTINGS]
+    values: dict[str, str | None] = {}
+    with conn.cursor(row_factory=dict_row) as cur:
+        database = _current_database(conn)
+        cur.execute("SELECT current_user AS who")
+        who = cur.fetchone()
+        assert who is not None
+        for name in names:
+            try:
+                with conn.transaction():  # a refused read leaves the rest usable
+                    cur.execute("SELECT current_setting(%s, true) AS value", (name,))
+                    row = cur.fetchone()
+            except psycopg.errors.InsufficientPrivilege:
+                row = None
+            values[name] = None if row is None or row["value"] is None else str(row["value"])
+        cur.execute(
+            "SELECT s.setrole <> 0 AS for_role, s.setdatabase <> 0 AS in_database,"
+            "       unnest(s.setconfig) AS item"
+            "  FROM pg_catalog.pg_db_role_setting s"
+            " WHERE (s.setrole = 0 AND s.setdatabase ="
+            "          (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database()))"
+            "    OR (s.setrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s)"
+            "        AND s.setdatabase IN (0, (SELECT oid FROM pg_catalog.pg_database"
+            "                                  WHERE datname = current_database())))",
+            (role,),
+        )
+        database_values: dict[str, str] = {}
+        overrides: list[tuple[str, bool, str]] = []
+        for row in cur.fetchall():
+            name, _, value = str(row["item"]).partition("=")
+            if name not in names:
+                continue
+            if row["for_role"]:
+                overrides.append((name, bool(row["in_database"]), value))
+            else:
+                database_values[name] = value
+    return LogSettings(
+        database=database,
+        role=role,
+        session_role=str(who["who"]),
+        values=values,
+        database_values=database_values,
+        role_overrides=tuple(sorted(overrides)),
     )
