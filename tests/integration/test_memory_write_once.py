@@ -27,13 +27,21 @@ NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
 
 def _insert_claim(db: Database) -> uuid.UUID:
     memory_id = uuid.uuid4()
-    with db.connect() as conn, conn.cursor() as cur:
+    # One transaction: 0003 requires every memory to carry an asserts
+    # observation by commit (spec D.1, provenance required).
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
         cur.execute(
             "INSERT INTO memory (id, scope, kind, subject, content, origin_tier, origin,"
             " status, created_at, updated_at)"
             " VALUES (%s, 'relationship', 'preference', 'communication',"
             " 'Janu prefers direct disagreement.', 'user_asserted', 'personal', 'active', %s, %s)",
             (memory_id, NOW, NOW),
+        )
+        cur.execute(
+            "INSERT INTO memory_observation (id, memory_id, relation, source_kind,"
+            " observed_at, created_at)"
+            " VALUES (%s, %s, 'asserts', 'user_direct_entry', %s, %s)",
+            (uuid.uuid4(), memory_id, NOW, NOW),
         )
     return memory_id
 
