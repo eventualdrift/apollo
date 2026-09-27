@@ -108,7 +108,7 @@ def test_the_log_settings_are_reported_and_the_fix_is_named(
     owner_db: Database, fresh_database, admin_dsn: str
 ) -> None:
     with owner_db.connect() as conn:
-        before = describe_log_settings(conn)
+        before = describe_log_settings(conn, role=fresh_database["role"])
     assert before.readable and not before.in_effect
     name = fresh_database["name"]
     assert before.missing() == [
@@ -118,14 +118,15 @@ def test_the_log_settings_are_reported_and_the_fix_is_named(
 
     _set_log_settings(fresh_database, admin_dsn)
     with owner_db.connect() as conn:  # a new session sees the per-database settings
-        after = describe_log_settings(conn)
+        after = describe_log_settings(conn, role=fresh_database["role"])
     assert after.in_effect and after.missing() == []
     assert after.values == {"log_error_verbosity": "terse", "log_min_error_statement": "panic"}
 
 
-def test_the_runtime_role_can_read_the_log_settings(db: Database) -> None:
+def test_the_runtime_role_can_read_the_log_settings(db: Database, fresh_database) -> None:
     with db.connect() as conn:
-        assert describe_log_settings(conn).readable
+        settings = describe_log_settings(conn, role=fresh_database["role"])
+    assert settings.readable and settings.session_role == fresh_database["role"]
 
 
 def test_provision_prints_the_settings_only_when_they_are_not_in_effect(
@@ -160,3 +161,93 @@ def test_doctor_reports_the_settings_without_failing_on_them(
     _set_log_settings(fresh_database, admin_dsn)
     assert main(["doctor"]) == 0
     assert "log settings: OK" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# read as the runtime role (Codex finding on #13)
+# ---------------------------------------------------------------------------
+
+
+def _set_role_setting(
+    admin_dsn: str, role: str, name: str, value: str, database: str | None = None
+) -> None:
+    statement = (
+        "ALTER ROLE {} IN DATABASE {} SET {} = {}" if database else "ALTER ROLE {} SET {} = {}"
+    )
+    parts = [sql.Identifier(role)] + ([sql.Identifier(database)] if database else [])
+    with psycopg.connect(admin_dsn, autocommit=True) as conn:
+        conn.execute(
+            sql.SQL(statement).format(*parts, sql.Identifier(name), sql.Literal(value))
+        )
+
+
+def test_a_setting_on_the_runtime_role_is_seen_by_provision_and_doctor(
+    cli_env, fresh_database, admin_dsn: str, monkeypatch, capsys
+) -> None:
+    """The admin's session sees the database's settings; Apollo's sessions get the role's."""
+    import io
+
+    role = fresh_database["role"]
+    _set_log_settings(fresh_database, admin_dsn)
+    _set_role_setting(admin_dsn, role, "log_error_verbosity", "verbose")
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["provision"]) == 0
+    out = capsys.readouterr().out
+    assert f"PostgreSQL log settings not in effect for {role}" in out
+    assert f'ALTER ROLE "{role}" RESET log_error_verbosity;' in out
+    assert "ALTER DATABASE" not in out  # the database's own settings are right
+
+    assert main(["doctor"]) == 0  # APOLLO_ADMIN_DSN is set, as in the finding
+    out = capsys.readouterr().out
+    assert "log_error_verbosity: verbose (want terse)" in out
+    assert "log settings: NOT IN EFFECT" in out
+    assert f'fix, as a superuser: ALTER ROLE "{role}" RESET log_error_verbosity;' in out
+
+
+def test_the_statements_name_every_override_that_defeats_a_setting(
+    owner_db: Database, fresh_database, admin_dsn: str
+) -> None:
+    role, name = fresh_database["role"], fresh_database["name"]
+    _set_role_setting(admin_dsn, role, "log_error_verbosity", "default")
+    _set_role_setting(admin_dsn, role, "log_error_verbosity", "verbose", database=name)
+    _set_role_setting(admin_dsn, role, "log_min_error_statement", "panic", database=name)
+    with owner_db.connect() as conn:  # the catalogue reads the same from any session
+        settings = describe_log_settings(conn, role=role)
+    assert settings.statements_to_ensure() == [
+        f'ALTER ROLE "{role}" RESET log_error_verbosity;',
+        f'ALTER ROLE "{role}" IN DATABASE "{name}" RESET log_error_verbosity;',
+        f"ALTER DATABASE \"{name}\" SET log_error_verbosity = 'terse';",
+        # the role's own panic setting already holds; only the database's is missing
+        f"ALTER DATABASE \"{name}\" SET log_min_error_statement = 'panic';",
+    ]
+
+
+def test_provision_and_doctor_say_so_when_they_cannot_check_as_the_runtime_role(
+    cli_env, fresh_database, monkeypatch, capsys
+) -> None:
+    import io
+
+    secret = "zqxdsnsecret"
+    monkeypatch.setenv(
+        "APOLLO_DATABASE_DSN",
+        f"host=127.0.0.1 port=1 user=nobody password={secret} dbname=none connect_timeout=2",
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["provision"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        f"Couldn't check the PostgreSQL log settings as {fresh_database['role']}"
+        " (could not connect with APOLLO_DATABASE_DSN: OperationalError)"
+    ) in out
+    assert "SET log_error_verbosity = 'terse';" in out  # what makes it certain
+    assert "not in effect" not in out and secret not in out
+
+    # The DSN names a different role: its settings are not the runtime role's.
+    monkeypatch.setenv("APOLLO_DATABASE_DSN", fresh_database["owner_dsn"])
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "log settings: UNCHECKED (APOLLO_DATABASE_DSN does not connect as the runtime role)"
+    ) in out
+    assert "log settings: OK" not in out

@@ -53,9 +53,10 @@ That is not the whole of the O.1 items it serves, because nothing renders a memo
 **Provisioning:** `apply_grants` revokes `TEMPORARY` on the Apollo database from `PUBLIC` and the
 runtime role, and least privilege now requires it (`apollo doctor` and `apollo provision` check
 it). `log_error_verbosity = terse` and `log_min_error_statement = panic` are documented next to
-provisioning; only a superuser can set them, so `apollo provision` prints the `ALTER DATABASE`
-statements while they are not in effect and `apollo doctor` reports them. Existing deployments
-should re-run `apollo provision` to drop TEMP.
+provisioning; only a superuser can set them, so `apollo provision` and `apollo doctor` check them
+as the runtime role (a setting on that role overrides the database's) and print the statements
+that fix them while they are not in effect. Existing deployments should re-run
+`apollo provision` to drop TEMP.
 
 **Backlog, as triaged by Janu:**
 - Right after step 10 (one prompt from Janu for the batch): findings 4 (the history gap: stop at the

@@ -88,8 +88,12 @@ and with the default `log_min_error_statement = error` it also logs the statemen
 Apollo never prints or logs an exception's text, but the server writes its own log, which a
 tombstone cannot reach. `log_error_verbosity = terse` drops the `DETAIL` line, and
 `log_min_error_statement = panic` stops failed statements being logged. Both are superuser
-settings, set per database, so provisioning can't set them itself: it prints the two
-`ALTER DATABASE` statements while they are not in effect, and `apollo doctor` reports them.
+settings, so provisioning can't set them itself. Set them per database; a setting on a role
+(`ALTER ROLE ... SET`) overrides the database's for that role's sessions. So `apollo provision`
+and `apollo doctor` check them as the runtime role, through `APOLLO_DATABASE_DSN`, and while
+they are not in effect print the statements that fix them, including `ALTER ROLE ... RESET` for
+an override on the runtime role. If they can't connect as the runtime role, they say so, and
+`apollo provision` prints the statements that make both settings certain.
 
 ## Memories
 
@@ -125,7 +129,9 @@ The row itself stays, as `tombstoned`, with its classification, provenance and t
 is **logical deletion, not physical erasure**. What it does not reach:
 
 - **The source.** The message where you said it keeps your words. Messages are write-once, and
-  phase zero has no message deletion.
+  phase zero has no message deletion. In the conversation where you said it, Apollo still sees
+  that message in its history on later turns (while it fits in the context), so the fact stays in
+  context there; a new conversation won't have it.
 - **Apollo's replies.** A reply that repeated the claim keeps it.
 - **Retrieval queries.** From step 11, the text of a query Apollo searched memory with is recorded
   with the turn, and can contain the claim.

@@ -304,10 +304,23 @@ LOG_SETTINGS: tuple[tuple[str, str], ...] = (
 
 @dataclass(frozen=True)
 class LogSettings:
-    """The server's log settings as this session sees them; None where unreadable."""
+    """The log settings on this database, for one role.
+
+    `values` are what the reading session got, so they are the role's effective
+    values only when that session is the role's own (`session_role == role`): a setting on
+    the role (`ALTER ROLE ... SET`) overrides the database's for its sessions
+    and nobody else's. The database and role settings themselves come from the
+    catalogue, which any role can read, so the statements built from them are
+    right whichever session read them. None in `values` means unreadable.
+    """
 
     database: str
+    role: str
+    session_role: str
     values: dict[str, str | None]
+    database_values: dict[str, str]
+    #: (setting, set only for this database, value) for each `ALTER ROLE role SET`.
+    role_overrides: tuple[tuple[str, bool, str], ...]
 
     @property
     def readable(self) -> bool:
@@ -318,13 +331,27 @@ class LogSettings:
         return all(self.values.get(name) == want for name, want in LOG_SETTINGS)
 
     def missing(self) -> list[str]:
-        """The ALTER DATABASE statements a superuser must run, for each setting not in effect."""
-        quoted = '"' + self.database.replace('"', '""') + '"'
-        return [
-            f"ALTER DATABASE {quoted} SET {name} = '{want}';"
-            for name, want in LOG_SETTINGS
-            if self.values.get(name) is not None and self.values[name] != want
-        ]
+        """The statements a superuser must run, for each setting not in effect in this session."""
+        wrong = {name for name, want in LOG_SETTINGS if self.values.get(name) != want}
+        return self._statements(wrong)
+
+    def statements_to_ensure(self) -> list[str]:
+        """The statements that make both settings certain for the role, from the catalogue alone."""
+        return self._statements({name for name, _ in LOG_SETTINGS})
+
+    def _statements(self, names: set[str]) -> list[str]:
+        database, role = _quote_ident(self.database), _quote_ident(self.role)
+        statements = []
+        for name, want in LOG_SETTINGS:
+            if name not in names:
+                continue
+            for setting, in_database, value in self.role_overrides:
+                if setting == name and value != want:
+                    scope = f" IN DATABASE {database}" if in_database else ""
+                    statements.append(f"ALTER ROLE {role}{scope} RESET {name};")
+            if self.database_values.get(name) != want:
+                statements.append(f"ALTER DATABASE {database} SET {name} = '{want}';")
+        return statements
 
     def as_lines(self) -> list[str]:
         return [
@@ -333,23 +360,59 @@ class LogSettings:
         ]
 
 
-def describe_log_settings(conn: psycopg.Connection[DictRow]) -> LogSettings:
-    """Read the log settings this session started with.
+def _quote_ident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
-    A per-database setting applies to sessions that start after it is set, and
-    `apollo provision` and `apollo doctor` each open a fresh connection, so this
-    is what a new session on the database gets. A per-role setting would still
-    override it for that role.
+
+def describe_log_settings(conn: psycopg.Connection[DictRow], *, role: str) -> LogSettings:
+    """Read the log settings this session started with, and those set for `role`.
+
+    A per-database or per-role setting applies to sessions that start after it
+    is set, and `apollo provision` and `apollo doctor` each open a fresh
+    connection. Only a session of `role` itself sees what `role`'s sessions
+    get; `LogSettings.session_role` says whose session this was.
     """
+    names = [name for name, _ in LOG_SETTINGS]
     values: dict[str, str | None] = {}
     with conn.cursor(row_factory=dict_row) as cur:
         database = _current_database(conn)
-        for name, _ in LOG_SETTINGS:
+        cur.execute("SELECT current_user AS who")
+        who = cur.fetchone()
+        assert who is not None
+        for name in names:
             try:
-                with conn.transaction():  # a savepoint: a refused read leaves the rest usable
+                with conn.transaction():  # a refused read leaves the rest usable
                     cur.execute("SELECT current_setting(%s, true) AS value", (name,))
                     row = cur.fetchone()
             except psycopg.errors.InsufficientPrivilege:
                 row = None
             values[name] = None if row is None or row["value"] is None else str(row["value"])
-    return LogSettings(database=database, values=values)
+        cur.execute(
+            "SELECT s.setrole <> 0 AS for_role, s.setdatabase <> 0 AS in_database,"
+            "       unnest(s.setconfig) AS item"
+            "  FROM pg_catalog.pg_db_role_setting s"
+            " WHERE (s.setrole = 0 AND s.setdatabase ="
+            "          (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database()))"
+            "    OR (s.setrole = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s)"
+            "        AND s.setdatabase IN (0, (SELECT oid FROM pg_catalog.pg_database"
+            "                                  WHERE datname = current_database())))",
+            (role,),
+        )
+        database_values: dict[str, str] = {}
+        overrides: list[tuple[str, bool, str]] = []
+        for row in cur.fetchall():
+            name, _, value = str(row["item"]).partition("=")
+            if name not in names:
+                continue
+            if row["for_role"]:
+                overrides.append((name, bool(row["in_database"]), value))
+            else:
+                database_values[name] = value
+    return LogSettings(
+        database=database,
+        role=role,
+        session_role=str(who["who"]),
+        values=values,
+        database_values=database_values,
+        role_overrides=tuple(sorted(overrides)),
+    )
