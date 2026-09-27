@@ -1181,3 +1181,79 @@ def test_a_redacted_completed_call_still_refuses_a_prompt_hash(db: Database) -> 
     _update_invocation(db, invocation, "status = 'completed'")
     with rejected("rendered_prompt_hash is set once"):
         _update_invocation(db, invocation, "rendered_prompt_hash = 'sha256:late'")
+
+
+# ---------------------------------------------------------------------------
+# the manifest is in the form the redaction matches (Codex PR #8, fourth review)
+# ---------------------------------------------------------------------------
+
+
+def _raw_invocation(db: Database, manifest: Any, bundle_hash: str | None = "sha256:b") -> None:
+    turn_invocation = _invocation(db)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT turn_id FROM model_invocation WHERE id = %s", (turn_invocation,))
+        turn_id = cur.fetchone()["turn_id"]
+        cur.execute(
+            "INSERT INTO model_invocation (id, turn_id, seq, purpose, brain_alias, provider_key,"
+            " adapter_key, render_version, compiler_version, token_estimator, context_manifest,"
+            " context_bundle_hash, context_token_estimate, max_trust_tier, generation_params,"
+            " status, started_at) VALUES (gen_random_uuid(), %s, 2, 'reply', 'b', 'p', 'a',"
+            " 'r', 'c', 'e', %s::jsonb, %s, 1, 'T3', '{}', 'started', now())",
+            (turn_id, json.dumps(manifest), bundle_hash),
+        )
+
+
+def test_an_invocation_is_recorded_with_its_bundle_hash(db: Database) -> None:
+    with rejected("with its bundle hash"):
+        _raw_invocation(db, [], bundle_hash=None)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["object", "scalar", "non-object entry"],
+)
+def test_a_manifest_is_an_array_of_entry_objects(db: Database, shape: str) -> None:
+    row, _ = in_status(db, Status.TOMBSTONED)
+    manifest: Any = {
+        "object": _entry(row),
+        "scalar": "memory",
+        "non-object entry": [_entry(create(db)), "memory"],
+    }[shape]
+    with rejected("context manifest"):
+        _raw_invocation(db, manifest)
+
+
+@pytest.mark.parametrize("included", ["true", 1, None])
+def test_a_memory_entry_says_whether_it_was_included_as_a_boolean(
+    db: Database, included: Any
+) -> None:
+    row, _ = in_status(db, Status.TOMBSTONED)
+    entry: dict[str, Any] = {"source_kind": "memory", "source_ref": str(row)}
+    if included is not None:
+        entry["included"] = included
+    with rejected("says whether it was included"):
+        _raw_invocation(db, [entry])
+
+
+def test_a_dropped_memory_entry_still_names_a_canonical_uuid(db: Database) -> None:
+    with rejected("canonical uuid"):
+        _raw_invocation(
+            db, [{"source_kind": "memory", "source_ref": "NOT-A-UUID", "included": False}]
+        )
+
+
+def test_0004_is_the_insert_guard_in_force(db: Database) -> None:
+    """The live function is 0004's: pinned search_path, strict manifest shape."""
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM schema_migration WHERE name = '0004_invocation_manifest_shape.sql'"
+        )
+        assert cur.fetchone() is not None
+        cur.execute(
+            "SELECT proconfig, prosrc FROM pg_proc WHERE proname = 'apollo_invocation_insert_guard'"
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["proconfig"] == ["search_path=pg_catalog, public, pg_temp"]
+    assert "a context manifest is an array of entries" in rows[0]["prosrc"]
+    assert "FROM public.memory" in rows[0]["prosrc"]

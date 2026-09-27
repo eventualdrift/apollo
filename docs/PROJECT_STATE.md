@@ -10,6 +10,27 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-09-27): step 10 in progress — carried items and backlog
+
+Step 10 (memory core) is under way. Merged so far: spec §D.9 clarifications and the memory types
+and lifecycle rules (#7), and migration `0003_memory_lifecycle.sql` (#8, `ac149b3`). Migration
+`0004_invocation_manifest_shape.sql` tightens `0003`'s invocation insert guard, closing the Codex
+findings on #8 that arrived after its last push. The M2 checkpoint below is unchanged and remains
+the current checkpoint.
+
+**Carried to step 10 PR 4 (tombstone):**
+- Stop emitting `bundle_hash` to the `invocation.started` audit payload and the `context.compiled`
+  log line, and remove it from both allowlists. Audit events are append-only (spec H.3), so a copy
+  there would survive a tombstone's hash redaction as a guess oracle once step 11 renders memories.
+  Hashes already recorded need no scrubbing: every bundle so far covers only identity, rules, the
+  retrieval notice and messages, none of which can be deleted in phase zero.
+- Resolve a tombstone request naming any row of a chain, including a superseded one, to the chain
+  head before `check_chain_tombstone`, and test that case.
+
+**Backlog:** the migration runner records applied files by name only, so an edited, already
+applied migration is silently ignored. Store a checksum per applied file and refuse to run on a
+mismatch.
+
 ## Update (2026-09-27): `apollo provision --password` fixed
 
 Supersedes the "Open Apollo bug" item in the M2 checkpoint below, which is otherwise unchanged
