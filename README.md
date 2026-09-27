@@ -95,6 +95,14 @@ they are not in effect print the statements that fix them, including `ALTER ROLE
 an override on the runtime role. If they can't connect as the runtime role, they say so, and
 `apollo provision` prints the statements that make both settings certain.
 
+Statement logging (`log_statement`, `log_min_duration_statement`) writes a statement's text, and
+its bind values on a separate `DETAIL: parameters:` line, which `terse` also drops. So with the
+two settings above, statement logging shows placeholders only. That holds because Apollo sends
+message, reply and memory text only as bind parameters, never inside a statement; a test
+records every statement a turn and the memory commands send, and fails if any contains the
+text. What `terse` can't cover is an extension that logs parameters itself, such as `pgaudit`
+with `pgaudit.log_parameter`, or `auto_explain`.
+
 ## Memories
 
 ```sh
