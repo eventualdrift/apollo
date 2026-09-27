@@ -116,7 +116,6 @@ def open_invocation(
                     "render_version": brain.render_version,
                     "compiler_version": bundle.compiler_version,
                     "token_estimator": bundle.estimator_name,
-                    "bundle_hash": bundle.bundle_hash,
                     "token_estimate": bundle.total_token_estimate,
                     "max_trust_tier": str(bundle.max_trust_tier),
                     "taint": bundle.taint,

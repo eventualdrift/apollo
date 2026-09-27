@@ -34,7 +34,6 @@ ALLOWED_EXTRA_KEYS = frozenset(
         "block_count",
         "block_type",
         "brain_alias",
-        "bundle_hash",
         "compiler_version",
         "conversation_id",
         "count",

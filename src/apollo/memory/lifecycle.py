@@ -38,9 +38,10 @@ from apollo.memory.models import (
     Scope,
     SourceKind,
     Status,
+    included_manifest_entry,
     validate_claim,
 )
-from apollo.storage.repositories import MemoryRepository
+from apollo.storage.repositories import InvocationRepository, MemoryRepository
 from apollo.storage.unit_of_work import UnitOfWork
 
 
@@ -232,8 +233,13 @@ def confirm(
 ) -> Change:
     """Spec D.6: a `confirms` observation and `last_confirmed_at`; no status change."""
     return _evidence(
-        uow, Operation.CONFIRM, memory_id,
-        source_kind=source_kind, now=now, message_id=message_id, excerpt=excerpt,
+        uow,
+        Operation.CONFIRM,
+        memory_id,
+        source_kind=source_kind,
+        now=now,
+        message_id=message_id,
+        excerpt=excerpt,
     )
 
 
@@ -248,8 +254,13 @@ def contradict(
 ) -> Change:
     """Spec D.6: a `contradicts` observation; never an automatic retraction."""
     return _evidence(
-        uow, Operation.CONTRADICT, memory_id,
-        source_kind=source_kind, now=now, message_id=message_id, excerpt=excerpt,
+        uow,
+        Operation.CONTRADICT,
+        memory_id,
+        source_kind=source_kind,
+        now=now,
+        message_id=message_id,
+        excerpt=excerpt,
     )
 
 
@@ -310,3 +321,67 @@ def restore(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Change:
     status = check(Operation.RESTORE, Status(_locked(repo, memory_id)["status"]))
     repo.mark_restored(memory_id, now)
     return Change(Operation.RESTORE, memory_id, status)
+
+
+@dataclass(frozen=True)
+class TombstonedRow:
+    memory_id: uuid.UUID
+    observations_redacted: int
+    invocations_redacted: int
+
+
+@dataclass(frozen=True)
+class Tombstone:
+    """What a chain tombstone removed: ids and counts only."""
+
+    requested_id: uuid.UUID
+    rows: tuple[TombstonedRow, ...]  # the head first, then each predecessor
+
+    @property
+    def head_id(self) -> uuid.UUID:
+        return self.rows[0].memory_id
+
+
+def _chain(repo: MemoryRepository, memory_id: uuid.UUID) -> list[dict[str, Any]]:
+    """The whole supersession chain, locked: the head first, then newest to oldest.
+
+    A request may name any row of the chain, including a superseded one: the
+    user who wants the old "4123" gone will name the old row. It resolves to
+    the head, and the head brings every predecessor with it (spec D.9/1).
+    """
+    row = _locked(repo, memory_id)
+    while row["superseded_by_id"] is not None:
+        row = _locked(repo, row["superseded_by_id"])
+    chain = [row]
+    while (predecessor := repo.lock_predecessor(chain[-1]["id"])) is not None:
+        chain.append(predecessor)
+    return chain
+
+
+def tombstone(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Tombstone:
+    """Forget a claim: the whole chain, in one transaction (spec D.7, D.9/1).
+
+    For each row, head first (the database requires a successor to go before
+    its predecessor): clear subject and content (the generated search vector
+    empties with them), clear every observation excerpt, and redact the
+    verification hashes of every invocation whose manifest included the row.
+    The caller records `memory.tombstoned` in the same transaction; the
+    database refuses to commit an incomplete tombstone (migrations 0003, 0004).
+    """
+    repo = MemoryRepository(uow)
+    invocations = InvocationRepository(uow)
+    chain = _chain(repo, memory_id)
+    check_chain_tombstone(Status(chain[0]["status"]), [Status(row["status"]) for row in chain[1:]])
+    rows = []
+    for row in chain:
+        repo.mark_tombstoned(row["id"], now)
+        rows.append(
+            TombstonedRow(
+                memory_id=row["id"],
+                observations_redacted=repo.clear_excerpts(row["id"]),
+                invocations_redacted=invocations.redact_hashes_including(
+                    included_manifest_entry(row["id"]), now
+                ),
+            )
+        )
+    return Tombstone(requested_id=memory_id, rows=tuple(rows))

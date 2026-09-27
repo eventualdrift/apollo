@@ -104,11 +104,35 @@ class MemoryRepository:
             (now, memory_id),
         )
 
+    def mark_tombstoned(self, memory_id: uuid.UUID, now: datetime) -> None:
+        """Clears the claim text. The generated `search_vector` empties with it."""
+        self._uow.execute(
+            "UPDATE memory SET status = 'tombstoned', subject = NULL, content = NULL,"
+            "  tombstoned_at = %s, updated_at = %s WHERE id = %s",
+            (now, now, memory_id),
+        )
+
+    def clear_excerpts(self, memory_id: uuid.UUID) -> int:
+        cur = self._uow.execute(
+            "UPDATE memory_observation SET excerpt = NULL"
+            " WHERE memory_id = %s AND excerpt IS NOT NULL",
+            (memory_id,),
+        )
+        return int(cur.rowcount)
+
     # -- reads ----------------------------------------------------------------
 
     def lock(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
         """The row, locked for the rest of the transaction (serialises lifecycle writes)."""
         cur = self._uow.execute("SELECT * FROM memory WHERE id = %s FOR UPDATE", (memory_id,))
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
+
+    def lock_predecessor(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
+        """The row this one superseded, locked; at most one (memory_superseded_by_uq)."""
+        cur = self._uow.execute(
+            "SELECT * FROM memory WHERE superseded_by_id = %s FOR UPDATE", (memory_id,)
+        )
         row: dict[str, Any] | None = cur.fetchone()
         return row
 
