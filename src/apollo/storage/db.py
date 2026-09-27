@@ -8,6 +8,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from psycopg import sql
@@ -111,6 +112,14 @@ _STATE_TABLES = (
 )
 
 
+def _current_database(conn: psycopg.Connection[Any]) -> str:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT current_database() AS name")
+        row = cur.fetchone()
+    assert row is not None
+    return str(row["name"])
+
+
 def apply_grants(conn: psycopg.Connection[DictRow], role: str) -> None:
     """Grant the runtime role exactly what Apollo needs, and revoke the rest.
 
@@ -143,6 +152,13 @@ def apply_grants(conn: psycopg.Connection[DictRow], role: str) -> None:
         # Migrations run as the owner; the runtime only needs to see what applied.
         cur.execute(sql.SQL("REVOKE ALL ON schema_migration FROM {}").format(ident))
         cur.execute(sql.SQL("GRANT SELECT ON schema_migration TO {}").format(ident))
+        # No temporary tables. A session-private table of the same name as an
+        # Apollo table is what an unpinned search_path would resolve first; the
+        # lifecycle functions pin theirs, and withholding TEMP closes the rest.
+        # Every role holds TEMP through PUBLIC by default, so revoke it there.
+        database = sql.Identifier(_current_database(conn))
+        cur.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(database))
+        cur.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM {}").format(database, ident))
 
 
 def provision_runtime_role(
@@ -202,7 +218,8 @@ def provision_runtime_role(
         raise RoleProvisioningError(
             f"role {role!r} is not least-privilege after provisioning "
             f"(superuser={facts.is_superuser}, owns_audit_event={facts.owns_audit_event}, "
-            f"audit_event={list(facts.audit_event_privileges)}). "
+            f"audit_event={list(facts.audit_event_privileges)}, "
+            f"can_create_temp={facts.can_create_temp}). "
             "Apollo must not run as a role that can modify its own audit stream."
         )
     log.info("provision.runtime_role", extra={"status": "created" if created else "updated"})
@@ -219,6 +236,7 @@ class RolePrivileges:
     audit_event_owner: str
     owns_audit_event: bool
     audit_event_privileges: tuple[str, ...]
+    can_create_temp: bool
 
     @property
     def is_least_privilege(self) -> bool:
@@ -226,6 +244,7 @@ class RolePrivileges:
             not self.is_superuser
             and not self.owns_audit_event
             and sorted(self.audit_event_privileges) == ["INSERT", "SELECT"]
+            and not self.can_create_temp
         )
 
     def as_lines(self) -> list[str]:
@@ -255,6 +274,12 @@ def describe_role_privileges(conn: psycopg.Connection[DictRow], role: str) -> Ro
             (role,),
         )
         audit_privileges = sorted(r["privilege_type"] for r in cur.fetchall())
+        cur.execute(
+            "SELECT has_database_privilege(%s, current_database(), 'TEMPORARY') AS temp",
+            (role,),
+        )
+        temp_row = cur.fetchone()
+        assert temp_row is not None
     return RolePrivileges(
         is_superuser=bool(row["rolsuper"]),
         can_create_db=bool(row["rolcreatedb"]),
@@ -262,4 +287,69 @@ def describe_role_privileges(conn: psycopg.Connection[DictRow], role: str) -> Ro
         audit_event_owner=str(owner),
         owns_audit_event=owner == role,
         audit_event_privileges=tuple(audit_privileges),
+        can_create_temp=bool(temp_row["temp"]),
     )
+
+
+#: The server log settings that keep claim text out of PostgreSQL's own log.
+#: A refused row is quoted in an error's DETAIL ("Failing row contains (...)"),
+#: which `terse` omits, and `log_min_error_statement` would log the statement
+#: that failed, which `panic` stops short of. Both are superuser settings, set
+#: per database: ALTER DATABASE <db> SET <name> = '<value>'.
+LOG_SETTINGS: tuple[tuple[str, str], ...] = (
+    ("log_error_verbosity", "terse"),
+    ("log_min_error_statement", "panic"),
+)
+
+
+@dataclass(frozen=True)
+class LogSettings:
+    """The server's log settings as this session sees them; None where unreadable."""
+
+    database: str
+    values: dict[str, str | None]
+
+    @property
+    def readable(self) -> bool:
+        return all(value is not None for value in self.values.values())
+
+    @property
+    def in_effect(self) -> bool:
+        return all(self.values.get(name) == want for name, want in LOG_SETTINGS)
+
+    def missing(self) -> list[str]:
+        """The ALTER DATABASE statements a superuser must run, for each setting not in effect."""
+        quoted = '"' + self.database.replace('"', '""') + '"'
+        return [
+            f"ALTER DATABASE {quoted} SET {name} = '{want}';"
+            for name, want in LOG_SETTINGS
+            if self.values.get(name) is not None and self.values[name] != want
+        ]
+
+    def as_lines(self) -> list[str]:
+        return [
+            f"{name}: {self.values.get(name) or 'unreadable'} (want {want})"
+            for name, want in LOG_SETTINGS
+        ]
+
+
+def describe_log_settings(conn: psycopg.Connection[DictRow]) -> LogSettings:
+    """Read the log settings this session started with.
+
+    A per-database setting applies to sessions that start after it is set, and
+    `apollo provision` and `apollo doctor` each open a fresh connection, so this
+    is what a new session on the database gets. A per-role setting would still
+    override it for that role.
+    """
+    values: dict[str, str | None] = {}
+    with conn.cursor(row_factory=dict_row) as cur:
+        database = _current_database(conn)
+        for name, _ in LOG_SETTINGS:
+            try:
+                with conn.transaction():  # a savepoint: a refused read leaves the rest usable
+                    cur.execute("SELECT current_setting(%s, true) AS value", (name,))
+                    row = cur.fetchone()
+            except psycopg.errors.InsufficientPrivilege:
+                row = None
+            values[name] = None if row is None or row["value"] is None else str(row["value"])
+    return LogSettings(database=database, values=values)

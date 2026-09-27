@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import psycopg
+import psycopg.sql
 import pytest
 
 from apollo.memory.lifecycle import ROW_TRANSITIONS
@@ -833,6 +834,23 @@ def test_a_failed_call_records_no_prompt_hash(db: Database) -> None:
         _update_invocation(db, invocation, "status = 'failed', rendered_prompt_hash = 'sha256:x'")
 
 
+def _allow_temp_tables(owner_db: Database, role: str) -> None:
+    """Give this test's runtime role back the TEMP privilege provisioning revokes.
+
+    Production has no temporary tables at all (`apply_grants` revokes TEMP), so
+    these tests grant it to their own role to prove the triggers would still
+    resist a shadowing table if the privilege ever came back.
+    """
+    with owner_db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT current_database() AS name")
+        database = cur.fetchone()["name"]
+        cur.execute(
+            psycopg.sql.SQL("GRANT TEMPORARY ON DATABASE {} TO {}").format(
+                psycopg.sql.Identifier(database), psycopg.sql.Identifier(role)
+            )
+        )
+
+
 def _shadow(cur: psycopg.Cursor[Any], table: str, row: dict[str, Any]) -> None:
     """A session-private table of the same name, which pg_temp would resolve first."""
     columns = {
@@ -846,7 +864,10 @@ def _shadow(cur: psycopg.Cursor[Any], table: str, row: dict[str, Any]) -> None:
     )
 
 
-def test_a_temporary_memory_table_cannot_vouch_for_a_tombstoned_parent(db: Database) -> None:
+def test_a_temporary_memory_table_cannot_vouch_for_a_tombstoned_parent(
+    db: Database, owner_db: Database, fresh_database: dict[str, Any]
+) -> None:
+    _allow_temp_tables(owner_db, fresh_database["role"])
     row, _ = in_status(db, Status.TOMBSTONED)
     with db.connect() as conn, conn.cursor() as cur:
         _shadow(cur, "memory", {"id": row, "status": "active", "superseded_by_id": None})
@@ -859,7 +880,10 @@ def test_a_temporary_memory_table_cannot_vouch_for_a_tombstoned_parent(db: Datab
             )
 
 
-def test_a_temporary_memory_table_cannot_vouch_for_a_successor(db: Database) -> None:
+def test_a_temporary_memory_table_cannot_vouch_for_a_successor(
+    db: Database, owner_db: Database, fresh_database: dict[str, Any]
+) -> None:
+    _allow_temp_tables(owner_db, fresh_database["role"])
     old = create(db)
     head, _ = in_status(db, Status.TOMBSTONED)
     with db.connect() as conn, conn.cursor() as cur:
@@ -872,7 +896,10 @@ def test_a_temporary_memory_table_cannot_vouch_for_a_successor(db: Database) -> 
             )
 
 
-def test_a_temporary_observation_table_cannot_supply_an_assertion(db: Database) -> None:
+def test_a_temporary_observation_table_cannot_supply_an_assertion(
+    db: Database, owner_db: Database, fresh_database: dict[str, Any]
+) -> None:
+    _allow_temp_tables(owner_db, fresh_database["role"])
     memory_id = uuid.uuid4()
     with (
         rejected("without an asserts observation"),
@@ -893,7 +920,10 @@ def test_a_temporary_observation_table_cannot_supply_an_assertion(db: Database) 
         )
 
 
-def test_a_temporary_observation_table_cannot_hide_an_excerpt(db: Database) -> None:
+def test_a_temporary_observation_table_cannot_hide_an_excerpt(
+    db: Database, owner_db: Database, fresh_database: dict[str, Any]
+) -> None:
+    _allow_temp_tables(owner_db, fresh_database["role"])
     row = create(db, excerpt="the words")
     with (
         rejected("clears every observation excerpt"),

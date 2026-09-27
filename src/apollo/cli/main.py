@@ -22,6 +22,7 @@ from apollo.logging_setup import configure_logging
 from apollo.storage.db import (
     Database,
     RoleProvisioningError,
+    describe_log_settings,
     describe_role_privileges,
     provision_runtime_role,
 )
@@ -200,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
                 with admin.connect() as conn:
                     created = provision_runtime_role(conn, config.runtime_role, password=password)
                     facts = describe_role_privileges(conn, config.runtime_role)
+                    log_settings = describe_log_settings(conn)
             except RoleProvisioningError as exc:
                 print(str(exc), file=sys.stderr)
                 return 2
@@ -207,6 +209,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  superuser:              {facts.is_superuser}")
             print(f"  owns audit_event:       {facts.owns_audit_event}")
             print(f"  audit_event privileges: {', '.join(facts.audit_event_privileges)}")
+            print(f"  can create temp tables: {facts.can_create_temp}")
+            if log_settings.readable and not log_settings.in_effect:
+                # Advice, not a failure: only a superuser can set these.
+                print("PostgreSQL log settings not in effect; a refused row's text can reach the"
+                      " server log. As a superuser, run:")
+                for statement in log_settings.missing():
+                    print(f"  {statement}")
             if not facts.is_least_privilege:
                 print("  WARNING: runtime role is not least-privilege", file=sys.stderr)
                 return 1
@@ -216,8 +225,12 @@ def main(argv: list[str] | None = None) -> int:
         target = Database(config.admin_dsn or config.database_dsn)
         with target.connect() as conn:
             facts = describe_role_privileges(conn, config.runtime_role)
+            log_settings = describe_log_settings(conn)
         for line in facts.as_lines():
             print(line)
+        for line in log_settings.as_lines():
+            print(line)
+        print("log settings:", "OK" if log_settings.in_effect else "NOT IN EFFECT")
         print("least privilege:", "OK" if facts.is_least_privilege else "VIOLATED")
         return 0 if facts.is_least_privilege else 1
 
