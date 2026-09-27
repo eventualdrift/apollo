@@ -34,8 +34,8 @@ ALTER TABLE memory ADD CONSTRAINT memory_superseded_by_uq UNIQUE (superseded_by_
 CREATE FUNCTION apollo_memory_lifecycle_guard() RETURNS trigger LANGUAGE plpgsql
     SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
+    succ        record;
     succ_status text;
-    succ_next   uuid;
 BEGIN
     IF TG_OP = 'INSERT' THEN
         -- Every row is created active: a direct entry, an approved proposal, or
@@ -102,12 +102,24 @@ BEGIN
     -- serialises this with a concurrent tombstone of that head: whichever
     -- commits second sees the other and is refused.
     IF OLD.status = 'active' AND NEW.status = 'superseded' THEN
-        SELECT status, superseded_by_id INTO succ_status, succ_next
+        SELECT status, superseded_by_id, scope, kind, subject, origin, origin_tier INTO succ
           FROM public.memory WHERE id = NEW.superseded_by_id FOR SHARE;
-        IF NEW.superseded_by_id = NEW.id OR succ_status IS DISTINCT FROM 'active'
-           OR succ_next IS NOT NULL THEN
+        IF NEW.superseded_by_id = NEW.id OR succ.status IS DISTINCT FROM 'active'
+           OR succ.superseded_by_id IS NOT NULL THEN
             RAISE EXCEPTION 'apollo: a memory is superseded only by an active chain head '
                             'other than itself'
+                USING ERRCODE = 'restrict_violation';
+        END IF;
+        -- A correction changes the content only (spec D.5, D.9/4): the successor
+        -- carries scope, kind, subject, origin and origin_tier forward unchanged.
+        -- Otherwise a "correction" could chain unrelated memories, and a
+        -- chain-wide tombstone of either would delete the other. pinned is
+        -- mutable (C.7) and deliberately not compared.
+        IF succ.scope IS DISTINCT FROM NEW.scope OR succ.kind IS DISTINCT FROM NEW.kind
+           OR succ.subject IS DISTINCT FROM NEW.subject OR succ.origin IS DISTINCT FROM NEW.origin
+           OR succ.origin_tier IS DISTINCT FROM NEW.origin_tier THEN
+            RAISE EXCEPTION 'apollo: a correction keeps scope, kind, subject, origin and '
+                            'origin_tier unchanged'
                 USING ERRCODE = 'restrict_violation';
         END IF;
     END IF;
@@ -150,14 +162,25 @@ CREATE CONSTRAINT TRIGGER memory_requires_assertion AFTER INSERT ON memory
     FOR EACH ROW EXECUTE FUNCTION apollo_memory_requires_assertion();
 
 -- A tombstone is complete by commit (spec D.7, D.9/1): the row's observation
--- excerpts are cleared, and no predecessor in its chain is left untombstoned.
--- Applied at each link, the second rule covers the whole chain.
+-- excerpts are cleared, every invocation whose manifest included it has its
+-- verification hashes redacted, and no predecessor in its chain is left
+-- untombstoned. Applied at each link, the last rule covers the whole chain.
 CREATE FUNCTION apollo_memory_tombstone_complete() RETURNS trigger LANGUAGE plpgsql
     SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
     IF EXISTS (SELECT 1 FROM public.memory_observation
                 WHERE memory_id = NEW.id AND excerpt IS NOT NULL) THEN
         RAISE EXCEPTION 'apollo: a tombstone clears every observation excerpt of its memory'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    -- The containment pattern is apollo.memory.models.included_manifest_entry.
+    IF EXISTS (SELECT 1 FROM public.model_invocation
+                WHERE hashes_redacted_at IS NULL
+                  AND context_manifest @> jsonb_build_array(jsonb_build_object(
+                        'source_kind', 'memory', 'source_ref', NEW.id::text,
+                        'included', true))) THEN
+        RAISE EXCEPTION 'apollo: a tombstone redacts the verification hashes of every '
+                        'invocation that included its memory'
             USING ERRCODE = 'restrict_violation';
     END IF;
     IF EXISTS (SELECT 1 FROM public.memory
@@ -249,11 +272,62 @@ ALTER TABLE model_invocation ADD CONSTRAINT invocation_redaction_ck CHECK (
          OR (context_bundle_hash IS NULL AND rendered_prompt_hash IS NULL))
 );
 
+-- An invocation is recorded before its call (spec C.4): started, with no
+-- prompt hash and no redaction. And it cannot record a bundle that included a
+-- tombstoned memory: that bundle's hash is exactly the oracle a tombstone
+-- removes (spec D.7). FOR SHARE serialises this with a concurrent tombstone:
+-- if the tombstone commits first this insert is refused; if this insert
+-- commits first, the tombstone's redaction sees it.
+CREATE FUNCTION apollo_invocation_insert_guard() RETURNS trigger LANGUAGE plpgsql
+    SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+    entry        jsonb;
+    ref          text;
+    ref_status   text;
+BEGIN
+    IF NEW.status <> 'started' OR NEW.rendered_prompt_hash IS NOT NULL
+       OR NEW.hashes_redacted_at IS NOT NULL OR NEW.hashes_redacted_reason IS NOT NULL THEN
+        RAISE EXCEPTION 'apollo: an invocation is recorded started, before its call, with no '
+                        'prompt hash and no redaction'
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF jsonb_typeof(NEW.context_manifest) = 'array' THEN
+        FOR entry IN SELECT value FROM jsonb_array_elements(NEW.context_manifest) LOOP
+            CONTINUE WHEN entry ->> 'source_kind' IS DISTINCT FROM 'memory'
+                       OR entry -> 'included' IS DISTINCT FROM 'true'::jsonb;
+            ref := entry ->> 'source_ref';
+            IF ref IS NULL OR ref !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
+                RAISE EXCEPTION 'apollo: a memory manifest entry names its memory by canonical uuid'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+            SELECT status INTO ref_status FROM public.memory WHERE id = ref::uuid FOR SHARE;
+            IF ref_status IS NULL OR ref_status = 'tombstoned' THEN
+                RAISE EXCEPTION 'apollo: an invocation cannot include a tombstoned or missing memory'
+                    USING ERRCODE = 'restrict_violation';
+            END IF;
+        END LOOP;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER invocation_insert_guard BEFORE INSERT ON model_invocation
+    FOR EACH ROW EXECUTE FUNCTION apollo_invocation_insert_guard();
+
 CREATE FUNCTION apollo_invocation_hash_guard() RETURNS trigger LANGUAGE plpgsql
     SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE
     redacting boolean := OLD.hashes_redacted_at IS NULL AND NEW.hashes_redacted_at IS NOT NULL;
 BEGIN
+    -- A tombstone can redact a call that is still in flight. Its completion
+    -- must still succeed, recording no prompt hash: the hash it carries is the
+    -- oracle the redaction removed. Only this one case is absorbed; every
+    -- other attempt to set a hash on a redacted row is refused below.
+    IF OLD.hashes_redacted_at IS NOT NULL AND OLD.status = 'started'
+       AND NEW.status = 'completed' THEN
+        NEW.rendered_prompt_hash := NULL;
+    END IF;
+
     -- Once redacted, always redacted: the hashes stay null and the record of
     -- the redaction does not move.
     IF OLD.hashes_redacted_at IS NOT NULL

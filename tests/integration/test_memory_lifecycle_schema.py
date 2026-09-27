@@ -8,6 +8,7 @@ or a hand-written UPDATE — can produce a state the lifecycle forbids.
 from __future__ import annotations
 
 import itertools
+import json
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -550,8 +551,13 @@ def test_a_tombstone_clears_an_excerpt_and_cannot_rewrite_it(db: Database) -> No
 
 
 def _invocation(
-    db: Database, *, status: str = "started", prompt_hash: str | None = None
+    db: Database,
+    *,
+    status: str = "started",
+    prompt_hash: str | None = None,
+    manifest: list[dict[str, Any]] | None = None,
 ) -> uuid.UUID:
+    """An invocation recorded as Apollo records one: started, then completed if asked."""
     conversation_id, message_id = uuid.uuid4(), uuid.uuid4()
     turn_id, invocation_id = uuid.uuid4(), uuid.uuid4()
     with db.connect() as conn, conn.cursor() as cur:
@@ -575,11 +581,16 @@ def _invocation(
             "INSERT INTO model_invocation (id, turn_id, seq, purpose, brain_alias, provider_key,"
             " adapter_key, render_version, compiler_version, token_estimator, context_manifest,"
             " context_bundle_hash, context_token_estimate, max_trust_tier, generation_params,"
-            " rendered_prompt_hash, status, started_at)"
+            " status, started_at)"
             " VALUES (%s, %s, 1, 'reply', 'brain.fake', 'fake', 'fake', 'r1', 'c1', 'e1',"
-            " '[]'::jsonb, 'sha256:bundle', 10, 'T1', '{}'::jsonb, %s, %s, %s)",
-            (invocation_id, turn_id, prompt_hash, status, NOW),
+            " %s::jsonb, 'sha256:bundle', 10, 'T1', '{}'::jsonb, 'started', %s)",
+            (invocation_id, turn_id, json.dumps(manifest or []), NOW),
         )
+        if status != "started":
+            cur.execute(
+                "UPDATE model_invocation SET status = %s, rendered_prompt_hash = %s WHERE id = %s",
+                (status, prompt_hash, invocation_id),
+            )
     return invocation_id
 
 
@@ -683,6 +694,7 @@ def test_the_migration_installs_its_rules(db: Database) -> None:
         ("memory", "memory_tombstone_complete"),
         ("memory_observation", "observation_guard"),
         ("model_invocation", "invocation_hash_guard"),
+        ("model_invocation", "invocation_insert_guard"),
     } <= triggers
     assert constraints == {
         "memory_phase0_origin_tier_ck",
@@ -907,9 +919,265 @@ def test_every_lifecycle_function_pins_its_search_path(db: Database) -> None:
             "SELECT proname, proconfig FROM pg_proc WHERE proname IN"
             " ('apollo_memory_lifecycle_guard', 'apollo_memory_requires_assertion',"
             "  'apollo_memory_tombstone_complete', 'apollo_observation_guard',"
-            "  'apollo_invocation_hash_guard')"
+            "  'apollo_invocation_hash_guard', 'apollo_invocation_insert_guard')"
         )
         configs = {r["proname"]: r["proconfig"] for r in cur.fetchall()}
-    assert len(configs) == 5
+    assert len(configs) == 6
     for name, config in configs.items():
         assert config == ["search_path=pg_catalog, public, pg_temp"], name
+
+
+# ---------------------------------------------------------------------------
+# a tombstone removes the verification-hash oracle (Codex PR #8, third review)
+# ---------------------------------------------------------------------------
+
+
+def _entry(memory_id: uuid.UUID, included: bool = True) -> dict[str, Any]:
+    return {"source_kind": "memory", "source_ref": str(memory_id), "included": included}
+
+
+def _redact_for(cur: psycopg.Cursor[Any], memory_id: uuid.UUID) -> None:
+    cur.execute(
+        f"UPDATE model_invocation SET {REDACT} WHERE hashes_redacted_at IS NULL"
+        " AND context_manifest @> %s::jsonb",
+        (json.dumps([_entry(memory_id)]),),
+    )
+
+
+def _hashes(db: Database, invocation_id: uuid.UUID) -> tuple[Any, Any]:
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT context_bundle_hash, hashes_redacted_reason FROM model_invocation"
+            " WHERE id = %s",
+            (invocation_id,),
+        )
+        row = cur.fetchone()
+    return row["context_bundle_hash"], row["hashes_redacted_reason"]
+
+
+def test_a_tombstone_that_leaves_an_included_hash_cannot_commit(db: Database) -> None:
+    row = create(db)
+    invocation = _invocation(db, manifest=[_entry(row)])
+    with (
+        rejected("redacts the verification hashes"),
+        db.connect() as conn,
+        conn.transaction(),  # the deferred check fires as this commits
+        conn.cursor() as cur,
+    ):
+        tombstone(cur, row)
+    assert _hashes(db, invocation) == ("sha256:bundle", None)
+
+
+def test_a_tombstone_with_its_redaction_commits_and_spares_dropped_blocks(
+    db: Database,
+) -> None:
+    row, other = create(db), create(db)
+    included = _invocation(db, status="completed", prompt_hash="sha256:p", manifest=[_entry(row)])
+    dropped = _invocation(db, manifest=[_entry(row, included=False)])
+    unrelated = _invocation(db, manifest=[_entry(other)])
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        tombstone(cur, row)
+        _redact_for(cur, row)
+    assert _hashes(db, included) == (None, "source_tombstoned")
+    assert _hashes(db, dropped) == ("sha256:bundle", None)
+    assert _hashes(db, unrelated) == ("sha256:bundle", None)
+
+
+@pytest.mark.parametrize(
+    "column,value",
+    [
+        ("rendered_prompt_hash", "'sha256:forged'"),
+        ("status", "'completed'"),
+        ("hashes_redacted_at", "now()"),
+    ],
+)
+def test_an_invocation_is_recorded_started_and_bare(db: Database, column: str, value: str) -> None:
+    invocation = _invocation(db)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT turn_id FROM model_invocation WHERE id = %s", (invocation,))
+        turn_id = cur.fetchone()["turn_id"]
+        columns = (
+            "id, turn_id, seq, purpose, brain_alias, provider_key, adapter_key,"
+            " render_version, compiler_version, token_estimator, context_manifest,"
+            " context_token_estimate, max_trust_tier, generation_params, status, started_at"
+        )
+        values = (
+            "gen_random_uuid(), %s, 2, 'reply', 'b', 'p', 'a', 'r', 'c', 'e', '[]', 1,"
+            " 'T1', '{}', 'started', now()"
+        )
+        if column == "status":
+            values = values.replace("'started'", value)
+        else:
+            columns += f", {column}"
+            values += f", {value}"
+        with rejected("recorded started"):
+            cur.execute(f"INSERT INTO model_invocation ({columns}) VALUES ({values})", (turn_id,))
+
+
+@pytest.mark.parametrize("state", ["tombstoned", "missing", "malformed"])
+def test_an_invocation_cannot_include_a_forgotten_memory(db: Database, state: str) -> None:
+    if state == "tombstoned":
+        ref: Any = in_status(db, Status.TOMBSTONED)[0]
+        entry = _entry(ref)
+        message = "tombstoned or missing"
+    elif state == "missing":
+        entry = _entry(uuid.uuid4())
+        message = "tombstoned or missing"
+    else:
+        entry = {"source_kind": "memory", "source_ref": "not-a-uuid", "included": True}
+        message = "canonical uuid"
+    with rejected(message):
+        _invocation(db, manifest=[entry])
+
+
+def test_a_dropped_block_of_a_forgotten_memory_may_still_be_recorded(db: Database) -> None:
+    row, _ = in_status(db, Status.TOMBSTONED)
+    _invocation(db, manifest=[_entry(row, included=False)])
+
+
+def test_an_invocation_recorded_first_is_redacted_by_a_waiting_tombstone(db: Database) -> None:
+    row = create(db)
+    turn_invocation = _invocation(db)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT turn_id FROM model_invocation WHERE id = %s", (turn_invocation,))
+        turn_id = cur.fetchone()["turn_id"]
+    insert = (
+        "INSERT INTO model_invocation (id, turn_id, seq, purpose, brain_alias, provider_key,"
+        " adapter_key, render_version, compiler_version, token_estimator, context_manifest,"
+        " context_bundle_hash, context_token_estimate, max_trust_tier, generation_params,"
+        " status, started_at) VALUES (%s, %s, 2, 'reply', 'b', 'p', 'a', 'r', 'c', 'e',"
+        " %s::jsonb, 'sha256:bundle', 1, 'T3', '{}', 'started', now())"
+    )
+    invocation = uuid.uuid4()
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.execute(insert, (invocation, turn_id, json.dumps([_entry(row)])))
+        background = _in_background(
+            db,
+            [
+                (TOMBSTONE_ALL[0][0], (row,)),
+                (
+                    f"UPDATE model_invocation SET {REDACT} WHERE hashes_redacted_at IS NULL"
+                    " AND context_manifest @> %s::jsonb",
+                    (json.dumps([_entry(row)]),),
+                ),
+            ],
+        )
+        assert background["waited"], "the tombstone must wait for the open insert"
+    background["thread"].join(5)
+    assert background["result"] == "committed"
+    assert _hashes(db, invocation) == (None, "source_tombstoned")
+
+
+def test_an_invocation_recorded_during_a_tombstone_is_refused(db: Database) -> None:
+    row = create(db)
+    turn_invocation = _invocation(db)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT turn_id FROM model_invocation WHERE id = %s", (turn_invocation,))
+        turn_id = cur.fetchone()["turn_id"]
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        tombstone(cur, row)
+        _redact_for(cur, row)
+        background = _in_background(
+            db,
+            [
+                (
+                    "INSERT INTO model_invocation (id, turn_id, seq, purpose, brain_alias,"
+                    " provider_key, adapter_key, render_version, compiler_version,"
+                    " token_estimator, context_manifest, context_bundle_hash,"
+                    " context_token_estimate, max_trust_tier, generation_params, status,"
+                    " started_at) VALUES (gen_random_uuid(), %s, 2, 'reply', 'b', 'p', 'a',"
+                    " 'r', 'c', 'e', %s::jsonb, 'sha256:bundle', 1, 'T3', '{}', 'started', now())",
+                    (turn_id, json.dumps([_entry(row)])),
+                )
+            ],
+        )
+        assert background["waited"], "the insert must wait for the open tombstone"
+    background["thread"].join(5)
+    assert background["result"] == "refused"
+    assert "tombstoned or missing" in background["message"]
+
+
+# ---------------------------------------------------------------------------
+# Janu's review of 0003
+# ---------------------------------------------------------------------------
+
+
+def _create_with(db: Database, **fields: str) -> uuid.UUID:
+    """A memory with the helper's defaults except `fields`, and its assertion."""
+    values = {"scope": "user", "kind": "fact", "subject": "subject", "origin": "personal"}
+    values.update(fields)
+    memory_id = uuid.uuid4()
+    with db.connect() as conn, conn.transaction(), conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO memory (id, scope, kind, subject, content, origin_tier, origin,"
+            " status, created_at, updated_at) VALUES (%s, %s, %s, %s, 'content',"
+            " 'user_asserted', %s, 'active', %s, %s)",
+            (
+                memory_id,
+                values["scope"],
+                values["kind"],
+                values["subject"],
+                values["origin"],
+                NOW,
+                NOW,
+            ),
+        )
+        _observe(cur, memory_id)
+    return memory_id
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("scope", "relationship"),
+        ("kind", "preference"),
+        ("subject", "communication"),
+        ("origin", "fixture"),
+        # origin_tier is compared too, but a differing successor cannot be built
+        # while memory_phase0_origin_tier_ck allows only user_asserted.
+    ],
+)
+def test_a_correction_cannot_link_an_unrelated_memory(db: Database, field: str, value: str) -> None:
+    old = _create_with(db)
+    unrelated = _create_with(db, **{field: value})
+    with db.connect() as conn, conn.cursor() as cur, rejected("keeps scope, kind, subject"):
+        _supersede(cur, old, unrelated)
+    assert status_of(db, old) == "active"
+
+
+def test_a_correction_may_change_content_and_pinned(db: Database) -> None:
+    old = _create_with(db)
+    new = _create_with(db)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE memory SET pinned = true WHERE id = %s", (new,))
+        _supersede(cur, old, new)
+    assert status_of(db, old) == "superseded"
+
+
+def test_a_redacted_call_in_flight_still_completes_without_a_prompt_hash(db: Database) -> None:
+    invocation = _invocation(db)
+    _update_invocation(db, invocation, REDACT)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT hashes_redacted_at, hashes_redacted_reason FROM model_invocation WHERE id = %s",
+            (invocation,),
+        )
+        before = cur.fetchone()
+    _update_invocation(
+        db, invocation, "status = 'completed', rendered_prompt_hash = 'sha256:prompt'"
+    )
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM model_invocation WHERE id = %s", (invocation,))
+        after = cur.fetchone()
+    assert after["status"] == "completed"
+    assert after["rendered_prompt_hash"] is None and after["context_bundle_hash"] is None
+    assert after["hashes_redacted_at"] == before["hashes_redacted_at"]
+    assert after["hashes_redacted_reason"] == before["hashes_redacted_reason"]
+
+
+def test_a_redacted_completed_call_still_refuses_a_prompt_hash(db: Database) -> None:
+    invocation = _invocation(db)
+    _update_invocation(db, invocation, REDACT)
+    _update_invocation(db, invocation, "status = 'completed'")
+    with rejected("rendered_prompt_hash is set once"):
+        _update_invocation(db, invocation, "rendered_prompt_hash = 'sha256:late'")
