@@ -245,18 +245,23 @@ def test_concurrent_tombstones_naming_different_rows_do_not_deadlock(
     old = _new(db)
     head = correct_memory(db, old, content="second", now=_later(1))
     barrier = threading.Barrier(2, timeout=10)
-    lock_many = MemoryRepository.lock_many
+    waited = threading.local()
 
-    def lock_after_both_found_the_chain(
-        self: MemoryRepository, memory_ids: list[uuid.UUID]
-    ) -> dict[uuid.UUID, dict[str, Any]]:
+    def once_both_have_arrived() -> None:
         if not getattr(waited, "done", False):
             waited.done = True
             barrier.wait()  # both requests have found the chain; neither holds a lock
-        return lock_many(self, memory_ids)
 
-    waited = threading.local()
-    monkeypatch.setattr(MemoryRepository, "lock_many", lock_after_both_found_the_chain)
+    for name in ("lock", "lock_many"):
+        locking = getattr(MemoryRepository, name)
+
+        def lock_after_both_found_the_chain(
+            self: MemoryRepository, *args: Any, _locking: Any = locking
+        ) -> Any:
+            once_both_have_arrived()
+            return _locking(self, *args)
+
+        monkeypatch.setattr(MemoryRepository, name, lock_after_both_found_the_chain)
     outcome: dict[str, Any] = {}
 
     def run(label: str, memory_id: uuid.UUID) -> None:
@@ -308,6 +313,79 @@ def test_a_correction_between_finding_and_locking_the_chain_is_tombstoned_too(
     assert removed == [added[0], head, old]
     for memory_id in removed:
         _assert_gone(db, memory_id)
+
+
+def test_a_grown_chain_whose_new_row_sorts_first_does_not_deadlock(
+    db: Database, monkeypatch
+) -> None:
+    """Codex finding on #11, second round: extending a partly locked chain.
+
+    A correction lands after the first tombstone found the chain, and its row's
+    id sorts below the rows already locked, as same-millisecond UUIDv7s can. A
+    second tombstone naming that row then locks it before the first extends its
+    locks to it. Queuing on the chain's oldest row first keeps them apart.
+    """
+    from apollo.storage.repositories import memories as memory_sql
+
+    old = _new(db)
+    head = correct_memory(db, old, content="second", now=_later(1))
+    lowest = uuid.UUID(int=(min(old, head).int >> 80) - 1 << 80 | 0x7000_8000_0000_0000_0001)
+    lock_many = MemoryRepository.lock_many
+    role = threading.local()
+    added: list[uuid.UUID] = []
+    second_is_locking = threading.Event()
+    outcome: dict[str, Any] = {}
+    second_thread = threading.Thread(target=lambda: second(), daemon=True)
+
+    def correct_with_the_lowest_id() -> None:
+        with monkeypatch.context() as patch:
+            patch.setattr(memory_sql, "uuid7", lambda: lowest)
+            added.append(correct_memory(db, head, content="third", now=_later(2)))
+
+    def second() -> None:
+        role.second = True
+        try:
+            outcome["second"] = tombstone_memory(db, added[0], now=_later(3))
+        except Exception as exc:  # recorded and asserted below
+            outcome["second"] = exc
+
+    def waiting_on_a_lock() -> bool:
+        return bool(
+            _rows(
+                db,
+                "SELECT 1 FROM pg_stat_activity WHERE datname = current_database()"
+                " AND wait_event_type = 'Lock'",
+            )
+        )
+
+    def scripted_lock_many(
+        self: MemoryRepository, memory_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, dict[str, Any]]:
+        if getattr(role, "second", False):
+            # the new row sorts first, so it is the row this tombstone locks first
+            self._uow.execute("SELECT 1 FROM memory WHERE id = %s FOR UPDATE", (min(memory_ids),))
+            second_is_locking.set()
+            return lock_many(self, memory_ids)
+        if not added:
+            _in_thread(correct_with_the_lowest_id)
+            rows = lock_many(self, memory_ids)
+            second_thread.start()
+            for _ in range(200):  # until the second holds the new row, or waits on a lock
+                if second_is_locking.wait(0.05) or waiting_on_a_lock():
+                    break
+            return rows
+        return lock_many(self, memory_ids)
+
+    monkeypatch.setattr(MemoryRepository, "lock_many", scripted_lock_many)
+    first = tombstone_memory(db, old, now=_later(3))
+    second_thread.join(20)
+    monkeypatch.undo()
+
+    assert added[0] < min(old, head)
+    assert first == [added[0], head, old]  # the grown chain, head first
+    assert isinstance(outcome["second"], LifecycleError)  # not DeadlockDetected
+    assert "tombstoned" in str(outcome["second"])
+    assert set(_tombstone_events(db)) == {added[0], head, old}
 
 
 def test_a_chain_that_keeps_changing_is_refused_and_nothing_changes(

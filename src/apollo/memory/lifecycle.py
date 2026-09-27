@@ -360,6 +360,17 @@ def _chain_ids(repo: MemoryRepository, memory_id: uuid.UUID) -> list[uuid.UUID]:
     return ids
 
 
+def _oldest_id(repo: MemoryRepository, memory_id: uuid.UUID) -> uuid.UUID:
+    """The chain's first row, read without locks; it is the same for the chain's lifetime."""
+    row = repo.get(memory_id)
+    if row is None:
+        raise MemoryNotFoundError("no memory has that id")
+    oldest: uuid.UUID = row["id"]
+    while (predecessor := repo.predecessor(oldest)) is not None:
+        oldest = predecessor["id"]
+    return oldest
+
+
 def _chain(repo: MemoryRepository, memory_id: uuid.UUID) -> list[dict[str, Any]]:
     """The whole supersession chain, locked: the head first, then newest to oldest.
 
@@ -367,11 +378,17 @@ def _chain(repo: MemoryRepository, memory_id: uuid.UUID) -> list[dict[str, Any]]
     user who wants the old "4123" gone will name the old row. It resolves to
     the head, and the head brings every predecessor with it (spec D.9/1).
 
-    The chain is found without locks, then every row is locked at once in id
-    order, so two tombstones naming different rows of one chain queue behind
-    each other instead of deadlocking. Under the locks the chain is walked
-    again; if a correction committed in between and grew it, start over.
+    Tombstones of one chain first queue on its oldest row, locked on its own:
+    that row never changes, since corrections only add rows at the head and no
+    row ever gains a predecessor. Holding it, a tombstone finds the chain
+    without locks, locks every row at once in id order and walks the chain
+    again under the locks; if a correction committed in between and grew it,
+    it locks the grown chain too. Another tombstone of the chain is meanwhile
+    waiting on the oldest row with nothing locked, so extending the set can't
+    deadlock with it, whatever order the ids sort in (same-millisecond UUIDv7s
+    are unordered).
     """
+    _locked(repo, _oldest_id(repo, memory_id))
     ids = _chain_ids(repo, memory_id)
     for _ in range(_CHAIN_ATTEMPTS):
         locked = repo.lock_many(ids)
