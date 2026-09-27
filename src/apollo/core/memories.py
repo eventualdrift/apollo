@@ -144,6 +144,34 @@ def restore_memory(db: Database, memory_id: uuid.UUID, *, now: datetime) -> None
         _record(uow, lifecycle.restore(uow, memory_id, now=now), now)
 
 
+def tombstone_memory(db: Database, memory_id: uuid.UUID, *, now: datetime) -> list[uuid.UUID]:
+    """Forget a claim and every earlier version of it (spec D.7, D.9/1).
+
+    `memory_id` may name any row of the chain. One `memory.tombstoned` event is
+    recorded per row, naming what was removed by id only. Returns the ids of
+    the rows tombstoned, the head first.
+    """
+    with unit_of_work(db) as uow:
+        result = lifecycle.tombstone(uow, memory_id, now=now)
+        for row in result.rows:
+            uow.record(
+                AuditEvent(
+                    event_type=EventType.MEMORY_TOMBSTONED,
+                    actor=Actor.USER,
+                    subject_kind="memory",
+                    subject_id=row.memory_id,
+                    occurred_at=now,
+                    payload={
+                        "status": str(Status.TOMBSTONED),
+                        "rows_tombstoned": len(result.rows),
+                        "observations_redacted": row.observations_redacted,
+                        "invocations_redacted": row.invocations_redacted,
+                    },
+                )
+            )
+    return [row.memory_id for row in result.rows]
+
+
 def get_memory(db: Database, memory_id: uuid.UUID) -> Memory:
     with unit_of_work(db, expect_audit=False) as uow:
         repo = MemoryRepository(uow)

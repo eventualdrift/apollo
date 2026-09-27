@@ -119,6 +119,21 @@ class InvocationRepository:
             (now, latency_ms, error_kind, error_detail, invocation_id),
         )
 
+    def redact_hashes_including(self, manifest_pattern: list[dict[str, Any]], now: datetime) -> int:
+        """Null both verification hashes wherever the manifest contains the pattern.
+
+        Spec D.7: a tombstone redacts every invocation whose bundle included the
+        memory. The pattern is a jsonb containment match (GIN indexed); rows
+        already redacted keep their first redaction. Returns the count.
+        """
+        cur = self._uow.execute(
+            "UPDATE model_invocation SET context_bundle_hash = NULL, rendered_prompt_hash = NULL,"
+            "  hashes_redacted_at = %s, hashes_redacted_reason = 'source_tombstoned'"
+            " WHERE hashes_redacted_at IS NULL AND context_manifest @> %s::jsonb",
+            (now, json.dumps(manifest_pattern, sort_keys=True)),
+        )
+        return int(cur.rowcount)
+
     def get(self, invocation_id: uuid.UUID) -> dict[str, Any] | None:
         cur = self._uow.execute(
             "SELECT * FROM model_invocation WHERE id = %s", (invocation_id,)

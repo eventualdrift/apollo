@@ -62,7 +62,6 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
         "adapter_key",
         "block_count",
         "brain_alias",
-        "bundle_hash",
         "compiler_version",
         "count",
         "dropped_count",

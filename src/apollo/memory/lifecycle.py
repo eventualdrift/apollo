@@ -38,9 +38,10 @@ from apollo.memory.models import (
     Scope,
     SourceKind,
     Status,
+    included_manifest_entry,
     validate_claim,
 )
-from apollo.storage.repositories import MemoryRepository
+from apollo.storage.repositories import InvocationRepository, MemoryRepository
 from apollo.storage.unit_of_work import UnitOfWork
 
 
@@ -232,8 +233,13 @@ def confirm(
 ) -> Change:
     """Spec D.6: a `confirms` observation and `last_confirmed_at`; no status change."""
     return _evidence(
-        uow, Operation.CONFIRM, memory_id,
-        source_kind=source_kind, now=now, message_id=message_id, excerpt=excerpt,
+        uow,
+        Operation.CONFIRM,
+        memory_id,
+        source_kind=source_kind,
+        now=now,
+        message_id=message_id,
+        excerpt=excerpt,
     )
 
 
@@ -248,8 +254,13 @@ def contradict(
 ) -> Change:
     """Spec D.6: a `contradicts` observation; never an automatic retraction."""
     return _evidence(
-        uow, Operation.CONTRADICT, memory_id,
-        source_kind=source_kind, now=now, message_id=message_id, excerpt=excerpt,
+        uow,
+        Operation.CONTRADICT,
+        memory_id,
+        source_kind=source_kind,
+        now=now,
+        message_id=message_id,
+        excerpt=excerpt,
     )
 
 
@@ -310,3 +321,108 @@ def restore(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Change:
     status = check(Operation.RESTORE, Status(_locked(repo, memory_id)["status"]))
     repo.mark_restored(memory_id, now)
     return Change(Operation.RESTORE, memory_id, status)
+
+
+@dataclass(frozen=True)
+class TombstonedRow:
+    memory_id: uuid.UUID
+    observations_redacted: int
+    invocations_redacted: int
+
+
+@dataclass(frozen=True)
+class Tombstone:
+    """What a chain tombstone removed: ids and counts only."""
+
+    requested_id: uuid.UUID
+    rows: tuple[TombstonedRow, ...]  # the head first, then each predecessor
+
+    @property
+    def head_id(self) -> uuid.UUID:
+        return self.rows[0].memory_id
+
+
+_CHAIN_ATTEMPTS = 3
+
+
+def _chain_ids(repo: MemoryRepository, memory_id: uuid.UUID) -> list[uuid.UUID]:
+    """The chain's ids, read without locks: the head first, then newest to oldest."""
+    row = repo.get(memory_id)
+    if row is None:
+        raise MemoryNotFoundError("no memory has that id")
+    while row["superseded_by_id"] is not None:
+        row = repo.get(row["superseded_by_id"])
+        if row is None:  # superseded_by_id is a foreign key; no row is ever deleted
+            raise MemoryNotFoundError("no memory has that id")
+    ids = [row["id"]]
+    while (predecessor := repo.predecessor(ids[-1])) is not None:
+        ids.append(predecessor["id"])
+    return ids
+
+
+def _oldest_id(repo: MemoryRepository, memory_id: uuid.UUID) -> uuid.UUID:
+    """The chain's first row, read without locks; it is the same for the chain's lifetime."""
+    row = repo.get(memory_id)
+    if row is None:
+        raise MemoryNotFoundError("no memory has that id")
+    oldest: uuid.UUID = row["id"]
+    while (predecessor := repo.predecessor(oldest)) is not None:
+        oldest = predecessor["id"]
+    return oldest
+
+
+def _chain(repo: MemoryRepository, memory_id: uuid.UUID) -> list[dict[str, Any]]:
+    """The whole supersession chain, locked: the head first, then newest to oldest.
+
+    A request may name any row of the chain, including a superseded one: the
+    user who wants the old "4123" gone will name the old row. It resolves to
+    the head, and the head brings every predecessor with it (spec D.9/1).
+
+    Tombstones of one chain first queue on its oldest row, locked on its own:
+    that row never changes, since corrections only add rows at the head and no
+    row ever gains a predecessor. Holding it, a tombstone finds the chain
+    without locks, locks every row at once in id order and walks the chain
+    again under the locks; if a correction committed in between and grew it,
+    it locks the grown chain too. Another tombstone of the chain is meanwhile
+    waiting on the oldest row with nothing locked, so extending the set can't
+    deadlock with it, whatever order the ids sort in (same-millisecond UUIDv7s
+    are unordered).
+    """
+    _locked(repo, _oldest_id(repo, memory_id))
+    ids = _chain_ids(repo, memory_id)
+    for _ in range(_CHAIN_ATTEMPTS):
+        locked = repo.lock_many(ids)
+        current = _chain_ids(repo, memory_id)
+        if current == ids:
+            return [locked[row_id] for row_id in ids]
+        ids = current
+    raise LifecycleError("the memory kept changing while it was being tombstoned; try again")
+
+
+def tombstone(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Tombstone:
+    """Forget a claim: the whole chain, in one transaction (spec D.7, D.9/1).
+
+    For each row, head first (the database requires a successor to go before
+    its predecessor): clear subject and content (the generated search vector
+    empties with them), clear every observation excerpt, and redact the
+    verification hashes of every invocation whose manifest included the row.
+    The caller records `memory.tombstoned` in the same transaction; the
+    database refuses to commit an incomplete tombstone (migrations 0003, 0004).
+    """
+    repo = MemoryRepository(uow)
+    invocations = InvocationRepository(uow)
+    chain = _chain(repo, memory_id)
+    check_chain_tombstone(Status(chain[0]["status"]), [Status(row["status"]) for row in chain[1:]])
+    rows = []
+    for row in chain:
+        repo.mark_tombstoned(row["id"], now)
+        rows.append(
+            TombstonedRow(
+                memory_id=row["id"],
+                observations_redacted=repo.clear_excerpts(row["id"]),
+                invocations_redacted=invocations.redact_hashes_including(
+                    included_manifest_entry(row["id"]), now
+                ),
+            )
+        )
+    return Tombstone(requested_id=memory_id, rows=tuple(rows))

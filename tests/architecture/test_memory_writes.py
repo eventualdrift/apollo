@@ -33,6 +33,8 @@ WRITERS = frozenset(
         "mark_superseded",
         "mark_archived",
         "mark_restored",
+        "mark_tombstoned",
+        "clear_excerpts",
     }
 )
 

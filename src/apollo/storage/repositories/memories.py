@@ -76,12 +76,16 @@ class MemoryRepository:
 
     def mark_confirmed(self, memory_id: uuid.UUID, now: datetime) -> None:
         self._uow.execute(
-            "UPDATE memory SET last_confirmed_at = %s, updated_at = %s WHERE id = %s",
+            "UPDATE memory SET last_confirmed_at = GREATEST(last_confirmed_at, %s),"
+            "  updated_at = GREATEST(updated_at, %s) WHERE id = %s",
             (now, now, memory_id),
         )
 
     def mark_contradicted(self, memory_id: uuid.UUID, now: datetime) -> None:
-        self._uow.execute("UPDATE memory SET updated_at = %s WHERE id = %s", (now, memory_id))
+        self._uow.execute(
+            "UPDATE memory SET updated_at = GREATEST(updated_at, %s) WHERE id = %s",
+            (now, memory_id),
+        )
 
     def mark_superseded(self, memory_id: uuid.UUID, by: uuid.UUID, now: datetime) -> None:
         self._uow.execute(
@@ -104,11 +108,40 @@ class MemoryRepository:
             (now, memory_id),
         )
 
+    def mark_tombstoned(self, memory_id: uuid.UUID, now: datetime) -> None:
+        """Clears the claim text. The generated `search_vector` empties with it."""
+        self._uow.execute(
+            "UPDATE memory SET status = 'tombstoned', subject = NULL, content = NULL,"
+            "  tombstoned_at = %s, updated_at = %s WHERE id = %s",
+            (now, now, memory_id),
+        )
+
+    def clear_excerpts(self, memory_id: uuid.UUID) -> int:
+        cur = self._uow.execute(
+            "UPDATE memory_observation SET excerpt = NULL"
+            " WHERE memory_id = %s AND excerpt IS NOT NULL",
+            (memory_id,),
+        )
+        return int(cur.rowcount)
+
     # -- reads ----------------------------------------------------------------
 
     def lock(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
         """The row, locked for the rest of the transaction (serialises lifecycle writes)."""
         cur = self._uow.execute("SELECT * FROM memory WHERE id = %s FOR UPDATE", (memory_id,))
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
+
+    def lock_many(self, memory_ids: list[uuid.UUID]) -> dict[uuid.UUID, dict[str, Any]]:
+        """The rows, locked in id order, so two callers locking overlapping sets can't deadlock."""
+        cur = self._uow.execute(
+            "SELECT * FROM memory WHERE id = ANY(%s) ORDER BY id FOR UPDATE", (memory_ids,)
+        )
+        return {row["id"]: row for row in cur.fetchall()}
+
+    def predecessor(self, memory_id: uuid.UUID) -> dict[str, Any] | None:
+        """The row this one superseded; at most one (memory_superseded_by_uq)."""
+        cur = self._uow.execute("SELECT * FROM memory WHERE superseded_by_id = %s", (memory_id,))
         row: dict[str, Any] | None = cur.fetchone()
         return row
 

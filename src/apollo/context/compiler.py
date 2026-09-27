@@ -253,7 +253,6 @@ def _finalise(
         extra={
             "purpose": str(req.purpose),
             "compiler_version": COMPILER_VERSION,
-            "bundle_hash": bundle.bundle_hash,
             "block_count": len(blocks),
             "dropped": len(dropped_entries),
             "token_estimate": total,
