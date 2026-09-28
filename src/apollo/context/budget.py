@@ -12,6 +12,7 @@ Two rules are hard:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from apollo.errors import ContextOverflowError, IdentityOverflowError
@@ -61,16 +62,24 @@ def conversation_allowance(
     return remaining
 
 
-def assert_conversation_floor(kept: int, available: int) -> None:
+def assert_conversation_floor(
+    kept: Sequence[object], available: Sequence[object]
+) -> None:
     """A degraded turn that looks normal is worse than an honest failure.
 
-    A conversation with no history yet is not a floor violation; a conversation
-    whose history could not be fitted is exactly the case this guards.
+    `kept` and `available` identify history messages, oldest first. The floor
+    is the newest `CONVERSATION_FLOOR_MESSAGES` of them (the last two
+    exchanges): each must actually be in `kept`, in order at its end. Counting
+    kept messages is not enough, since a count can be met by older ones while
+    a recent one is missing. A conversation with no history yet is not a floor
+    violation; a conversation whose recent history could not be fitted is
+    exactly the case this guards.
     """
-    if available == 0:
+    required = min(CONVERSATION_FLOOR_MESSAGES, len(available))
+    if required == 0:
         return
-    if kept < min(CONVERSATION_FLOOR_MESSAGES, available):
+    if list(kept[-required:]) != list(available[-required:]):
         raise ContextOverflowError(
-            f"conversation floor not met: kept {kept} of a required "
-            f"{min(CONVERSATION_FLOOR_MESSAGES, available)} messages"
+            f"conversation floor not met: the newest {required} history messages"
+            " do not all fit"
         )
