@@ -33,6 +33,9 @@ pytestmark = pytest.mark.integration
 class RecordingBrain(FakeBrain):
     """Answers with a fixed identifier; fails per_020 at the transport level."""
 
+    #: The concluded experiment is frozen to the renderer its plan was sealed with.
+    render_version = "chat-v1"
+
     def __init__(self) -> None:
         super().__init__(key="qwen")
         self.notices: list[str] = []

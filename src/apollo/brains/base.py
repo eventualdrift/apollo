@@ -98,17 +98,43 @@ class Brain(Protocol):
 # contract is implemented once rather than re-derived per provider.
 # ---------------------------------------------------------------------------
 
-#: Bumped whenever the transformation below changes the bytes sent.
-CHAT_RENDER_VERSION = "chat-v1"
+#: Bumped whenever the transformation below changes the bytes sent (spec G.3).
+#: chat-v2 coalesces consecutive same-role history messages; chat-v1 did not.
+CHAT_RENDER_VERSION = "chat-v2"
+
+#: Every chat render version this code can still produce. Invocations record
+#: the version they were rendered with, so replay (step 13) re-renders an old
+#: invocation with its own version, not the current default.
+CHAT_RENDER_VERSIONS = ("chat-v1", "chat-v2")
 
 
-def render_chat(bundle: ContextBundle, *, supports_system_role: bool = True) -> RenderedRequest:
+class UnknownRenderVersionError(ApolloError):
+    """A render version this code cannot produce."""
+
+
+def render_chat(
+    bundle: ContextBundle,
+    *,
+    supports_system_role: bool = True,
+    render_version: str = CHAT_RENDER_VERSION,
+) -> RenderedRequest:
     """Render a bundle into system / history / (data + request) messages.
 
     Data and the request share the final user message because consecutive user
     messages are rejected by some providers. The fencing, not the message
     boundary, is what separates them.
+
+    For the same reason, consecutive history messages with the same role are
+    coalesced into one message, in order, and a history message from Janu that
+    immediately precedes the request opens the final user message. That is
+    what a failed turn leaves behind: Janu's message with no reply from Apollo.
+    Each message keeps its words and its role (spec G.3), and roles alternate.
+    That is chat-v2. `render_version="chat-v1"` renders as before it, one
+    message per history block, for replaying invocations recorded under it.
     """
+    if render_version not in CHAT_RENDER_VERSIONS:
+        raise UnknownRenderVersionError(f"unknown chat render version {render_version!r}")
+    coalesce = render_version != "chat-v1"
     messages: list[RenderedMessage] = []
     placement: list[tuple[int, int]] = []
 
@@ -119,13 +145,26 @@ def render_chat(bundle: ContextBundle, *, supports_system_role: bool = True) -> 
         messages.append(RenderedMessage(role=role, content=text))
         placement.extend((b.position, 0) for b in policy)
 
+    history_start = len(messages)
     for block in bundle.blocks_in(Region.HISTORY):
         role = "assistant" if block.role == "apollo" else "user"
-        messages.append(RenderedMessage(role=role, content=block.content))
+        if coalesce and len(messages) > history_start and messages[-1].role == role:
+            previous = messages[-1]
+            merged = f"{previous.content}\n\n{block.content}"
+            messages[-1] = RenderedMessage(role=role, content=merged)
+        else:
+            messages.append(RenderedMessage(role=role, content=block.content))
         placement.append((block.position, len(messages) - 1))
 
     tail: list[str] = []
     tail_positions: list[int] = []
+    if coalesce and len(messages) > history_start and messages[-1].role == "user":
+        # Unanswered: it opens the final user message rather than standing
+        # alone before it. Its blocks keep their placement at the new index.
+        unanswered = messages.pop()
+        tail.append(unanswered.content)
+        moved = len(messages)
+        placement = [(position, -1 if index == moved else index) for position, index in placement]
     for block in bundle.blocks_in(Region.DATA):
         header = f"{block.block_type} tier={block.trust_tier}"
         if block.source_ref:
@@ -142,6 +181,7 @@ def render_chat(bundle: ContextBundle, *, supports_system_role: bool = True) -> 
     if tail:
         messages.append(RenderedMessage(role="user", content="\n\n".join(tail)))
         index = len(messages) - 1
+        placement = [(position, index if i == -1 else i) for position, i in placement]
         placement.extend((position, index) for position in tail_positions)
 
     request = RenderedRequest(
