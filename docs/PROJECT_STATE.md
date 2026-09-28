@@ -10,6 +10,28 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-09-28): render_version `chat-v2` (review fix 2 of 4)
+
+The step 10 update below is unchanged. After a failed turn, the next request rendered two user
+messages in a row, which some providers reject (spec G.3). `chat-v2` coalesces consecutive
+same-role history messages, and an unanswered message from Janu opens the final user message.
+G.3 requires a render_version bump for any change to the bytes sent, so the default is now
+`chat-v2`. `chat-v1` stays callable by version (`render_chat(..., render_version="chat-v1")`)
+for replaying invocations recorded before the bump; an adapter renders with the version it
+declares.
+
+**Spec J.5 for this change** (persona suite + replay check on recent turns):
+- **Persona suite: met by byte-identity, not a rerun.** `chat-v2` differs from `chat-v1` only when
+  history has consecutive same-role messages, and no persona corpus case has any.
+  `tests/unit/test_render_versions.py` renders all 30 corpus cases under both versions, at the M2
+  context sizes 9216 and 16384, and asserts the requests are byte-identical. A persona-suite rerun
+  would send the models exactly the bytes the M2 runs sent, so the M2 results stand for `chat-v2`.
+  Run records made from now on record `chat-v2`; eval diff validity is decided by bundle hashes.
+- **Replay check: deferred to step 13**, which builds replay. Until then no replay path exists to
+  check. Step 13 must re-render invocations recorded under `chat-v1` with `chat-v1`.
+- The concluded retrieval-notice ablation stays frozen to `chat-v1`: its preflight refuses a
+  `chat-v2` renderer, which is correct for a sealed experiment.
+
 ## Update (2026-09-27): step 10 (memory core) complete — the database mechanics are proven
 
 Supersedes the "step 10 in progress" update below, whose body is preserved unchanged; both carried

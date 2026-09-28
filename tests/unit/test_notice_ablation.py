@@ -384,6 +384,9 @@ def test_run_refuses_an_unknown_model(tmp_path, identity, cases):
 
 
 class _FrozenContextBrain(FakeBrain):
+    #: The concluded experiment is frozen to the renderer its plan was sealed with.
+    render_version = "chat-v1"
+
     def __init__(self, max_context: int) -> None:
         super().__init__(key="qwen")
         self._frozen_max = max_context

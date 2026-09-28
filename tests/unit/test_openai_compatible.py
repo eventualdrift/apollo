@@ -116,7 +116,7 @@ def test_it_satisfies_the_brain_protocol() -> None:
     brain = a_brain()
     assert isinstance(brain, Brain)
     assert brain.adapter_key == "openai_compatible"
-    assert brain.render_version == "chat-v1"
+    assert brain.render_version == "chat-v2"
 
 
 def test_capabilities_cover_the_configured_budget() -> None:
