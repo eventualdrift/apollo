@@ -18,7 +18,13 @@ import pytest
 from apollo.brains.base import RenderContractError
 from apollo.brains.fake import FakeBrain
 from apollo.core.conversations import create_conversation, transcript
-from apollo.core.turns import SYSTEM_NOTE_INTERNAL, SYSTEM_NOTES, system_note_for
+from apollo.core.turns import (
+    SYSTEM_NOTE_INTERNAL,
+    SYSTEM_NOTE_REJECTED_AUTH,
+    SYSTEM_NOTES,
+    TRANSPORT_NOTES,
+    system_note_for,
+)
 from apollo.errors import BrainTransportError, EmptyGenerationError, ErrorKind
 
 pytestmark = pytest.mark.integration
@@ -31,8 +37,10 @@ def _notes(db, conversation_id) -> list[str]:
 
 
 class LeakyTransportError(BrainTransportError):
+    """A connection failure whose own message text carries a secret, as real ones do."""
+
     def __init__(self) -> None:
-        super().__init__(http_status=503, provider_error_code="unavailable")
+        super().__init__(provider_error_type="connection_failed")
         self.args = (f"POST /v1/chat failed: {SENTINEL}",)
 
 
@@ -102,7 +110,11 @@ def test_no_note_carries_exception_provider_or_private_content(
     assert "Traceback" not in blob
     # Every note is one of the fixed constants and nothing else.
     for note in _notes(db, conversation_id):
-        assert note in set(SYSTEM_NOTES.values()) | {SYSTEM_NOTE_INTERNAL}
+        assert note in (
+            set(SYSTEM_NOTES.values())
+            | set(TRANSPORT_NOTES.values())
+            | {SYSTEM_NOTE_INTERNAL, SYSTEM_NOTE_REJECTED_AUTH}
+        )
 
 
 def test_a_policy_refusal_no_longer_writes_a_bare_enum_name(db, service_factory, clock) -> None:

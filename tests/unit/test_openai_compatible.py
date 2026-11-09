@@ -35,7 +35,14 @@ from apollo.context.compiler import CompileRequest, HistoryMessage, compile_cont
 from apollo.context.escaping import escape
 from apollo.context.estimator import CONSERVATIVE
 from apollo.core.identity import compose_identity
-from apollo.errors import BrainTransportError, ConfigError
+from apollo.errors import (
+    BrainResponseError,
+    BrainTransportError,
+    ConfigError,
+    MalformedGenerationError,
+    ProviderContextOverflowError,
+    TransportReason,
+)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
@@ -407,10 +414,11 @@ def test_an_http_error_keeps_only_status_and_two_short_scalars(monkeypatch) -> N
     patched(monkeypatch, transport)
     bundle = a_bundle()
 
-    with pytest.raises(BrainTransportError) as caught:
+    with pytest.raises(BrainResponseError) as caught:
         brain.generate(brain.render(bundle), GenerationParams())
 
     exc = caught.value
+    assert isinstance(exc, ProviderContextOverflowError)
     assert exc.http_status == 400
     assert exc.provider_error_code == "context_length_exceeded"
     assert exc.provider_error_type == "invalid_request_error"
@@ -430,14 +438,16 @@ def test_the_sanitised_detail_is_what_core_would_persist(monkeypatch) -> None:
     brain, transport = a_brain(), FakeTransport(error=error)
     patched(monkeypatch, transport)
     bundle = a_bundle()
-    with pytest.raises(BrainTransportError) as caught:
+    with pytest.raises(BrainResponseError) as caught:
         brain.generate(brain.render(bundle), GenerationParams())
 
     detail = error_detail(caught.value)
     assert detail == ("http_status=503 provider_error_code=context_length_exceeded "
                       "provider_error_type=invalid_request_error")
     assert SECRET not in detail and "4123" not in detail
-    assert error_kind(caught.value).value == "brain_unavailable"
+    # The provider's context_length_exceeded marker wins over a 503 status:
+    # retrying the same oversized request would fail the same way.
+    assert error_kind(caught.value).value == "context_overflow"
 
 
 def test_a_connection_failure_carries_no_url(monkeypatch) -> None:
@@ -449,10 +459,11 @@ def test_a_connection_failure_carries_no_url(monkeypatch) -> None:
         brain.generate(brain.render(bundle), GenerationParams())
     assert caught.value.http_status is None
     assert caught.value.provider_error_type == "connection_failed"
+    assert caught.value.reason is TransportReason.CONNECTION
     assert SECRET not in repr(caught.value) + str(caught.value)
 
 
-def test_a_malformed_body_is_a_transport_error_not_a_crash(monkeypatch) -> None:
+def test_a_malformed_body_is_a_malformed_generation_not_a_crash(monkeypatch) -> None:
     class BadJson(FakeTransport):
         def __call__(self, request, timeout=None):  # noqa: ANN001
             self.requests.append(request)
@@ -461,7 +472,7 @@ def test_a_malformed_body_is_a_transport_error_not_a_crash(monkeypatch) -> None:
     brain = a_brain()
     patched(monkeypatch, BadJson())
     bundle = a_bundle()
-    with pytest.raises(BrainTransportError) as caught:
+    with pytest.raises(MalformedGenerationError) as caught:
         brain.generate(brain.render(bundle), GenerationParams())
     assert caught.value.provider_error_type == "malformed_response"
 
@@ -470,11 +481,11 @@ def test_a_malformed_body_is_a_transport_error_not_a_crash(monkeypatch) -> None:
     "body", [{"choices": []}, {"choices": [{"finish_reason": "stop"}]}, {}],
     ids=["no-choices", "no-message", "empty-body"],
 )
-def test_a_structurally_invalid_response_is_a_transport_error(monkeypatch, body) -> None:
+def test_a_structurally_invalid_response_is_a_malformed_generation(monkeypatch, body) -> None:
     brain = a_brain()
     patched(monkeypatch, FakeTransport(body))
     bundle = a_bundle()
-    with pytest.raises(BrainTransportError):
+    with pytest.raises(MalformedGenerationError):
         brain.generate(brain.render(bundle), GenerationParams())
 
 

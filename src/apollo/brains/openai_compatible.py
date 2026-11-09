@@ -36,7 +36,14 @@ from apollo.brains.base import (
 from apollo.config import ProviderConfig
 from apollo.context.bundle import ContextBundle
 from apollo.context.estimator import CONSERVATIVE
-from apollo.errors import BrainTransportError, ConfigError
+from apollo.errors import (
+    BrainResponseError,
+    BrainTransportError,
+    ConfigError,
+    MalformedGenerationError,
+    TransportReason,
+    classify_http_status,
+)
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +157,7 @@ class OpenAICompatibleBrain:
     # -- transport ---------------------------------------------------------
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST JSON. Every failure becomes a transport error carrying scalars only."""
+        """POST JSON. Every failure becomes a classified error carrying scalars only."""
         request = urllib.request.Request(  # noqa: S310 - configured base_url, not user input
             url=self._base_url + path,
             data=json.dumps(payload).encode("utf-8"),
@@ -161,16 +168,19 @@ class OpenAICompatibleBrain:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
-            raise self._transport_error_from_http(exc) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
-            # No status, and deliberately nothing from the exception: a client's
-            # message routinely embeds the URL with its query string (spec H.5).
-            raise BrainTransportError(provider_error_type="connection_failed") from None
+            raise self._error_from_http(exc) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # No status, and deliberately nothing from the exception's text: a
+            # client's message routinely embeds the URL with its query string
+            # (spec H.5). Only its type says whether it was a timeout.
+            raise _connection_error(exc) from None
 
         try:
-            decoded: dict[str, Any] = json.loads(raw)
+            decoded = json.loads(raw)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise BrainTransportError(provider_error_type="malformed_response") from None
+            raise MalformedGenerationError(provider_error_type="malformed_response") from None
+        if not isinstance(decoded, dict):
+            raise MalformedGenerationError(provider_error_type="malformed_response")
         return decoded
 
     def _headers(self) -> dict[str, str]:
@@ -179,8 +189,8 @@ class OpenAICompatibleBrain:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
-    def _transport_error_from_http(self, exc: urllib.error.HTTPError) -> BrainTransportError:
-        """Read a status and two short scalars. Never the body, never the message."""
+    def _error_from_http(self, exc: urllib.error.HTTPError) -> BrainResponseError:
+        """Read a status and two short scalars, and classify. Never the body or message."""
         code: str | None = None
         kind: str | None = None
         try:
@@ -190,8 +200,8 @@ class OpenAICompatibleBrain:
                 kind = _short_scalar(error.get("type"))
         except Exception:  # noqa: BLE001 - a malformed error body is not itself an error
             pass
-        return BrainTransportError(
-            http_status=int(exc.code), provider_error_code=code, provider_error_type=kind
+        return classify_http_status(
+            int(exc.code), provider_error_code=code, provider_error_type=kind
         )
 
     # -- response mapping --------------------------------------------------
@@ -201,11 +211,11 @@ class OpenAICompatibleBrain:
     ) -> Generation:
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise BrainTransportError(provider_error_type="no_choices")
+            raise MalformedGenerationError(provider_error_type="no_choices")
         choice = choices[0]
         message = choice.get("message") if isinstance(choice, dict) else None
         if not isinstance(message, dict):
-            raise BrainTransportError(provider_error_type="malformed_choice")
+            raise MalformedGenerationError(provider_error_type="malformed_choice")
 
         # An empty or whitespace answer is returned as-is. Core classifies it
         # as `empty_generation`: a content-level failure that fails the turn and
@@ -234,6 +244,22 @@ class OpenAICompatibleBrain:
                 "provider_request_id": _short_scalar(body.get("id")) or "",
             },
         )
+
+
+def _connection_error(exc: BaseException) -> BrainTransportError:
+    """A failure before any HTTP status: a timeout, or the connection itself.
+
+    urllib reports a connect timeout as a URLError wrapping the TimeoutError,
+    and a read timeout as the TimeoutError itself.
+    """
+    reason = getattr(exc, "reason", None) if isinstance(exc, urllib.error.URLError) else None
+    if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError):
+        return BrainTransportError(
+            provider_error_type="timeout", reason=TransportReason.TIMEOUT
+        )
+    return BrainTransportError(
+        provider_error_type="connection_failed", reason=TransportReason.CONNECTION
+    )
 
 
 def _reasoning_token_count(usage: dict[str, Any], message: dict[str, Any]) -> int | None:

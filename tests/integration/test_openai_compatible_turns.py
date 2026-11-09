@@ -17,8 +17,8 @@ import pytest
 
 from apollo.brains.openai_compatible import OpenAICompatibleBrain
 from apollo.core.conversations import create_conversation, transcript
-from apollo.core.turns import SYSTEM_NOTES
-from apollo.errors import ErrorKind
+from apollo.core.turns import SYSTEM_NOTE_REJECTED_AUTH, SYSTEM_NOTES, TRANSPORT_NOTES
+from apollo.errors import ErrorKind, TransportReason
 
 pytestmark = pytest.mark.integration
 
@@ -191,7 +191,7 @@ def test_two_transport_failures_fail_the_turn_without_fallback(
     assert len(transport.requests) == 2, "one retry, never a third attempt"
     notes = [m["content"] for m in transcript(db, conversation_id)
              if m["role"] == "system_note"]
-    assert notes == [SYSTEM_NOTES[ErrorKind.BRAIN_UNAVAILABLE]]
+    assert notes == [TRANSPORT_NOTES[TransportReason.UNAVAILABLE]]
 
 
 def test_a_reasoning_channel_never_reaches_the_database(db, adapter_service, clock) -> None:
@@ -228,6 +228,99 @@ def test_a_reasoning_channel_never_reaches_the_database(db, adapter_service, clo
             (f"%{REASONING}%",),
         )
         assert cur.fetchone()["n"] == 0
+
+
+def overflow_error() -> urllib.error.HTTPError:
+    payload = json.dumps(
+        {"error": {"message": f"too long {SECRET}", "code": "context_length_exceeded",
+                   "type": "invalid_request_error"}}
+    ).encode()
+    return urllib.error.HTTPError(
+        url="https://example.invalid/v1", code=400, msg="err", hdrs=None,
+        fp=io.BytesIO(payload),
+    )
+
+
+#: Review fix 3: every provider failure class, the kind it records, the note
+#: Janu reads, and whether it is retried. Factories, so each run gets a fresh
+#: exception with an unread body.
+FAILURE_CLASSES = [
+    ("connection", lambda: urllib.error.URLError(f"refused {SECRET}"),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.CONNECTION], True),
+    ("timeout", lambda: TimeoutError(f"timed out {SECRET}"),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.TIMEOUT], True),
+    ("http-408", lambda: http_error(408),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.TIMEOUT], True),
+    ("http-429", lambda: http_error(429),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.BUSY], True),
+    ("http-502", lambda: http_error(502),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.UNAVAILABLE], True),
+    ("http-503", lambda: http_error(503),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.UNAVAILABLE], True),
+    ("http-504", lambda: http_error(504),
+     ErrorKind.BRAIN_UNAVAILABLE, TRANSPORT_NOTES[TransportReason.UNAVAILABLE], True),
+    ("http-500", lambda: http_error(500),
+     ErrorKind.BRAIN_FAILED, SYSTEM_NOTES[ErrorKind.BRAIN_FAILED], False),
+    ("http-400", lambda: http_error(400),
+     ErrorKind.BRAIN_REJECTED, SYSTEM_NOTES[ErrorKind.BRAIN_REJECTED], False),
+    ("http-401", lambda: http_error(401),
+     ErrorKind.BRAIN_REJECTED, SYSTEM_NOTE_REJECTED_AUTH, False),
+    ("context-overflow", overflow_error,
+     ErrorKind.CONTEXT_OVERFLOW, SYSTEM_NOTES[ErrorKind.CONTEXT_OVERFLOW], False),
+    ("no-choices", lambda: {"choices": []},
+     ErrorKind.MALFORMED_GENERATION, SYSTEM_NOTES[ErrorKind.MALFORMED_GENERATION], False),
+]
+
+
+@pytest.mark.parametrize(
+    ("make_failure", "kind", "note", "retried"),
+    [case[1:] for case in FAILURE_CLASSES],
+    ids=[case[0] for case in FAILURE_CLASSES],
+)
+def test_each_failure_class_records_its_kind_note_and_retry(
+    db, adapter_service, clock, make_failure, kind, note, retried
+) -> None:
+    service, transport = adapter_service(make_failure(), make_failure())
+    conversation_id = create_conversation(db, now=clock())
+    result = service.submit(conversation_id=conversation_id, text="hello")
+
+    assert result.status == "failed"
+    assert result.error_kind == kind
+    assert len(transport.requests) == (2 if retried else 1)
+
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT error_kind, error_detail FROM model_invocation WHERE turn_id = %s"
+            " ORDER BY seq",
+            (result.turn_id,),
+        )
+        invocations = cur.fetchall()
+    assert [r["error_kind"] for r in invocations] == [kind] * (2 if retried else 1)
+    assert SECRET not in repr(invocations)
+
+    notes = [m["content"] for m in transcript(db, conversation_id)
+             if m["role"] == "system_note"]
+    assert notes == [note]
+
+
+@pytest.mark.parametrize(
+    ("make_failure", "retried"),
+    [(case[1], case[4]) for case in FAILURE_CLASSES],
+    ids=[case[0] for case in FAILURE_CLASSES],
+)
+def test_only_a_transport_failure_recovers_on_the_retry(
+    db, adapter_service, clock, make_failure, retried
+) -> None:
+    service, transport = adapter_service(make_failure(), body())
+    conversation_id = create_conversation(db, now=clock())
+    result = service.submit(conversation_id=conversation_id, text="hello")
+
+    if retried:
+        assert result.status == "completed"
+        assert len(transport.requests) == 2
+    else:
+        assert result.status == "failed"
+        assert len(transport.requests) == 1, "a non-transport failure is never retried"
 
 
 def test_no_secret_reaches_the_database(db, adapter_service, clock) -> None:
