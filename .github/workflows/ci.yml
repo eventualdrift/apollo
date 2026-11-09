@@ -1,0 +1,54 @@
+# Lint, types and the full test suite, against a real PostgreSQL 16, on every
+# pull request and push. The integration tests need real PostgreSQL: the
+# schema relies on triggers, generated tsvector columns and role grants.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: ["claude/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Types
+        run: mypy
+
+      # The runner image ships PostgreSQL 16, stopped. The test fixtures
+      # connect without a password, except the provisioning test's own
+      # `*_pw` roles, which must get SCRAM so that test really checks it.
+      - name: Start PostgreSQL
+        run: |
+          sudo pg_ctlcluster 16 main start
+          hba=$(sudo -u postgres psql -tAc 'show hba_file')
+          sudo tee "$hba" > /dev/null <<'HBA'
+          local   all   all                     peer
+          host    all   /_pw$     127.0.0.1/32  scram-sha-256
+          host    all   all       127.0.0.1/32  trust
+          host    all   all       ::1/128       trust
+          HBA
+          sudo pg_ctlcluster 16 main reload
+          psql "host=127.0.0.1 user=postgres dbname=postgres" -c 'select version()'
+
+      - name: Tests
+        env:
+          APOLLO_TEST_ADMIN_DSN: "host=127.0.0.1 user=postgres dbname=postgres"
+        run: pytest -q -rs
