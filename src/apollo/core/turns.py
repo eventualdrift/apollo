@@ -36,7 +36,14 @@ from apollo.context.compiler import CompileRequest, HistoryMessage, compile_cont
 from apollo.core import invocations
 from apollo.core.identity import IdentityLoader, snapshot_identity
 from apollo.core.policy import SURFACE_INTERACTIVE, check_brain_permitted
-from apollo.errors import ApolloError, BrainTransportError, ErrorKind, PolicyRefusedError
+from apollo.errors import (
+    ApolloError,
+    BrainRejectedError,
+    BrainTransportError,
+    ErrorKind,
+    PolicyRefusedError,
+    TransportReason,
+)
 from apollo.sanitise import error_detail, error_kind
 from apollo.storage.db import Database
 from apollo.storage.repositories import (
@@ -64,6 +71,18 @@ MAX_TRANSPORT_RETRIES = 1
 SYSTEM_NOTES: dict[ErrorKind, str] = {
     ErrorKind.BRAIN_UNAVAILABLE: (
         "Apollo could not reach its model. No response was generated for that message."
+    ),
+    ErrorKind.BRAIN_FAILED: (
+        "Apollo's model service failed while handling that message. "
+        "No response was generated for that message."
+    ),
+    ErrorKind.BRAIN_REJECTED: (
+        "Apollo's model service rejected the request. "
+        "No response was generated for that message."
+    ),
+    ErrorKind.MALFORMED_GENERATION: (
+        "Apollo's model returned a response Apollo could not read. "
+        "No response was generated for that message."
     ),
     ErrorKind.EMPTY_GENERATION: (
         "Apollo's model returned nothing. No response was generated for that message."
@@ -103,9 +122,47 @@ SYSTEM_NOTE_INTERNAL = (
 )
 
 
+#: A transport failure says which kind it was: "could not reach" is true of a
+#: refused connection, not of a timeout or a service that answered 503.
+TRANSPORT_NOTES: dict[TransportReason, str] = {
+    TransportReason.CONNECTION: SYSTEM_NOTES[ErrorKind.BRAIN_UNAVAILABLE],
+    TransportReason.TIMEOUT: (
+        "Apollo's model timed out before answering. "
+        "No response was generated for that message."
+    ),
+    TransportReason.UNAVAILABLE: (
+        "Apollo's model service was temporarily unavailable. "
+        "No response was generated for that message."
+    ),
+    TransportReason.BUSY: (
+        "Apollo's model service was too busy to answer. "
+        "No response was generated for that message."
+    ),
+}
+
+#: A rejection for credentials (401/403) is worth naming: it is fixed by
+#: configuration, not by trying again.
+SYSTEM_NOTE_REJECTED_AUTH = (
+    "Apollo's model service refused its credentials. "
+    "No response was generated for that message."
+)
+
+
 def system_note_for(kind: ErrorKind) -> str:
     """The truthful note for a failure category. Total, and never derived from input."""
     return SYSTEM_NOTES.get(kind, SYSTEM_NOTE_INTERNAL)
+
+
+def system_note_for_error(exc: BaseException) -> str:
+    """The note for a failure, refined by its class where the kind alone is too coarse.
+
+    Reads only the exception's type and Apollo-defined attributes, never its text.
+    """
+    if isinstance(exc, BrainTransportError):
+        return TRANSPORT_NOTES.get(exc.reason, system_note_for(exc.kind))
+    if isinstance(exc, BrainRejectedError) and exc.is_auth:
+        return SYSTEM_NOTE_REJECTED_AUTH
+    return system_note_for(error_kind(exc))
 
 
 @dataclass(frozen=True)
@@ -438,7 +495,7 @@ class TurnService:
         now = self._clock()
         latency = max(1, int((time.monotonic() - turn_started) * 1000))
         kind = error_kind(exc)
-        note = system_note_for(kind)
+        note = system_note_for_error(exc)
         with unit_of_work(self._db) as uow:
             TurnRepository(uow).fail(
                 turn_id=turn_id,

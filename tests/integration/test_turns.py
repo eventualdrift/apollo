@@ -145,7 +145,9 @@ def test_retry_is_spent_only_once(db, service_factory, clock) -> None:
     assert len(rows(db, "SELECT 1 FROM model_invocation WHERE turn_id = %s",
                     (result.turn_id,))) == 2
     notes = [m for m in transcript(db, conv) if m["role"] == "system_note"]
-    assert notes and "could not reach its model" in notes[0]["content"]
+    # A 503 is a service that answered "unavailable", not one Apollo could not reach.
+    assert notes and "temporarily unavailable" in notes[0]["content"]
+    assert "could not reach its model" not in notes[0]["content"]
 
 
 def test_a_content_failure_is_never_retried(db, service_factory, clock) -> None:

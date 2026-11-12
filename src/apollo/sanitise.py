@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from apollo.errors import ApolloError, BrainTransportError, ErrorKind
+from apollo.errors import ApolloError, BrainResponseError, ErrorKind
 
 ERROR_DETAIL_MAX = 500
 
@@ -52,7 +52,7 @@ def error_detail(exc: BaseException) -> str | None:
     Returns None when there is nothing whitelisted to say, which is the common
     case and is preferable to recording a message we have not inspected.
     """
-    if isinstance(exc, BrainTransportError):
+    if isinstance(exc, BrainResponseError):
         parts: list[str] = []
         if exc.http_status is not None:
             parts.append(f"http_status={int(exc.http_status)}")

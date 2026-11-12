@@ -14,6 +14,9 @@ class ErrorKind(StrEnum):
     """Closed enum. Persisted in `turn.error_kind` / `model_invocation.error_kind`."""
 
     BRAIN_UNAVAILABLE = "brain_unavailable"
+    BRAIN_FAILED = "brain_failed"
+    BRAIN_REJECTED = "brain_rejected"
+    MALFORMED_GENERATION = "malformed_generation"
     BRAIN_MODE_NOT_PERMITTED = "brain_mode_not_permitted"
     BRAIN_NOT_INTERACTIVE = "brain_not_interactive"
     EMPTY_GENERATION = "empty_generation"
@@ -61,10 +64,12 @@ class PolicyRefusedError(ApolloError):
         self.detail = detail
 
 
-class BrainTransportError(ApolloError):
-    """A transport-level provider failure. The only class eligible for retry (spec L)."""
+class BrainResponseError(ApolloError):
+    """A provider call that failed, carrying only whitelisted scalars (spec H.5).
 
-    kind = ErrorKind.BRAIN_UNAVAILABLE
+    The subclass says which failure class it was, and so which note the
+    transcript gets and whether the call is retried (spec L).
+    """
 
     def __init__(
         self,
@@ -75,10 +80,116 @@ class BrainTransportError(ApolloError):
     ) -> None:
         # Deliberately no message argument: str(exception) from an HTTP client
         # routinely embeds the request body or a URL with query parameters (H.5).
-        super().__init__("brain transport failure")
+        super().__init__(f"brain failure: {type(self).__name__}")
         self.http_status = http_status
         self.provider_error_code = provider_error_code
         self.provider_error_type = provider_error_type
+
+
+class TransportReason(StrEnum):
+    """Why a transport failure happened. Each has its own truthful note."""
+
+    CONNECTION = "connection"
+    TIMEOUT = "timeout"
+    UNAVAILABLE = "unavailable"
+    BUSY = "busy"
+
+
+#: HTTP statuses that mean "try again shortly": the request never reached a
+#: model that could answer it. The only statuses retried (spec L).
+TRANSPORT_STATUSES = frozenset({408, 429, 502, 503, 504})
+
+
+class BrainTransportError(BrainResponseError):
+    """A transport-level provider failure. The only class eligible for retry (spec L).
+
+    Connection failures and timeouts, and HTTP 408, 429, 502, 503 and 504.
+    """
+
+    kind = ErrorKind.BRAIN_UNAVAILABLE
+
+    def __init__(
+        self,
+        *,
+        http_status: int | None = None,
+        provider_error_code: str | None = None,
+        provider_error_type: str | None = None,
+        reason: TransportReason | None = None,
+    ) -> None:
+        super().__init__(
+            http_status=http_status,
+            provider_error_code=provider_error_code,
+            provider_error_type=provider_error_type,
+        )
+        self.reason = reason if reason is not None else _transport_reason(http_status)
+
+
+def _transport_reason(http_status: int | None) -> TransportReason:
+    if http_status is None:
+        return TransportReason.CONNECTION
+    if http_status == 408:
+        return TransportReason.TIMEOUT
+    if http_status == 429:
+        return TransportReason.BUSY
+    return TransportReason.UNAVAILABLE
+
+
+class BrainServiceError(BrainResponseError):
+    """The provider failed while handling the request (HTTP 500 and other 5xx).
+
+    Not retried: the request reached the service and it failed on it, so a
+    second identical attempt is not a transport retry.
+    """
+
+    kind = ErrorKind.BRAIN_FAILED
+
+
+class BrainRejectedError(BrainResponseError):
+    """The provider refused the request (4xx other than 408 and 429). Not retried."""
+
+    kind = ErrorKind.BRAIN_REJECTED
+
+    @property
+    def is_auth(self) -> bool:
+        return self.http_status in (401, 403)
+
+
+class ProviderContextOverflowError(BrainResponseError):
+    """The provider said the request does not fit its context window. Not retried."""
+
+    kind = ErrorKind.CONTEXT_OVERFLOW
+
+
+class MalformedGenerationError(BrainResponseError):
+    """The provider answered with something that is not a usable response. Not retried."""
+
+    kind = ErrorKind.MALFORMED_GENERATION
+
+
+CONTEXT_OVERFLOW_MARKERS = frozenset({"context_length_exceeded"})
+
+
+def classify_http_status(
+    http_status: int,
+    *,
+    provider_error_code: str | None = None,
+    provider_error_type: str | None = None,
+) -> BrainResponseError:
+    """Map an HTTP failure to its class. Only the status and two scalars are read."""
+    cls: type[BrainResponseError]
+    if {provider_error_code, provider_error_type} & CONTEXT_OVERFLOW_MARKERS:
+        cls = ProviderContextOverflowError
+    elif http_status in TRANSPORT_STATUSES:
+        cls = BrainTransportError
+    elif http_status >= 500:
+        cls = BrainServiceError
+    else:
+        cls = BrainRejectedError
+    return cls(
+        http_status=http_status,
+        provider_error_code=provider_error_code,
+        provider_error_type=provider_error_type,
+    )
 
 
 class EmptyGenerationError(ApolloError):
