@@ -34,10 +34,12 @@ ALLOWED: dict[str, frozenset[str]] = {
         {"core", "config", "errors", "logging_setup", "context", "brains", "storage", "evals"}
     ),
     # The eval subsystem drives a real turn through the real invocation path,
-    # so it depends on everything a turn depends on. It is still a caller:
+    # so it depends on everything a turn depends on, `memory` included: the
+    # retrieval suite (spec E.5) runs retrieval directly, with no model, and
+    # loads its fixtures through the memory lifecycle. It is still a caller:
     # nothing in Apollo imports `evals/`.
     "evals": frozenset(
-        {"core", "context", "brains", "audit", "storage", "config", "errors",
+        {"core", "memory", "context", "brains", "audit", "storage", "config", "errors",
          "sanitise", "logging_setup"}
     ),
 }

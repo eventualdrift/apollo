@@ -1,0 +1,86 @@
+# Preferences about how Apollo talks to Janu, among distractors and recent
+# unrelated memories. Later-listed memories are newer (recency is by order).
+version: 1
+fixture:
+  memories:
+    - {ref: no_restate, scope: relationship, kind: preference, subject: communication, origin_tier: user_asserted,
+       content: "Janu prefers Apollo not to restate his question before answering."}
+    - {ref: short_answers, scope: relationship, kind: preference, subject: communication, origin_tier: user_asserted,
+       content: "Janu wants the short answer first, with detail only when he asks for it."}
+    - {ref: study_group_calls, scope: world, kind: preference, subject: communication, origin_tier: user_asserted,
+       content: "Janu prefers written updates over calls with his study group."}
+    - {ref: no_emoji, scope: relationship, kind: preference, subject: style, origin_tier: user_asserted,
+       content: "Janu dislikes emoji in technical explanations."}
+    - {ref: disagree, scope: relationship, kind: preference, subject: communication, origin_tier: user_asserted,
+       content: "Janu wants Apollo to say plainly when it disagrees, before giving reasons."}
+    - {ref: garden, scope: user, kind: event, subject: garden, origin_tier: user_asserted,
+       content: "Janu planted tomatoes and basil on his balcony in October."}
+    - {ref: braai, scope: user, kind: event, subject: family, origin_tier: user_asserted,
+       content: "Janu hosted a braai for his cousins last weekend."}
+    - {ref: podcast, scope: user, kind: preference, subject: media, origin_tier: user_asserted,
+       content: "Janu listens to a history podcast on his commute."}
+
+cases:
+  - id: comm_001
+    type: preference
+    split: tune
+    description: "Preference retrieval with a same-subject distractor present."
+    query: "should I just answer or recap the question first?"
+    must_retrieve: [no_restate]
+    may_retrieve: [short_answers]
+    must_not_retrieve: [study_group_calls]
+    max_rank: 3
+    substantive_match_expected: true
+
+  - id: comm_002
+    type: preference
+    split: holdout
+    description: "Answer length, asked in different words from the memory."
+    query: "how long should your answers be?"
+    must_retrieve: [short_answers]
+    may_retrieve: [no_restate]
+    max_rank: 3
+    substantive_match_expected: true
+
+  - id: comm_003
+    type: preference
+    split: tune
+    description: "A style preference found by its one distinctive word."
+    query: "can you use emoji when explaining code?"
+    must_retrieve: [no_emoji]
+    max_rank: 2
+    substantive_match_expected: true
+
+  - id: comm_004
+    type: preference
+    split: holdout
+    description: "How to disagree with Janu."
+    query: "what should you do when you disagree with me?"
+    must_retrieve: [disagree]
+    max_rank: 2
+    substantive_match_expected: true
+
+  - id: comm_005
+    type: unrelated_recent
+    split: tune
+    description: "Recent memories exist but none bears on the question; recency must not count."
+    query: "what's the boiling point of water at altitude?"
+    substantive_match_expected: false
+
+  - id: comm_006
+    type: unrelated_recent
+    split: holdout
+    description: "A networking question with only unrelated recent memories."
+    query: "how do I configure a VLAN on my switch?"
+    substantive_match_expected: false
+
+  - id: comm_007
+    type: multiple_relevant
+    split: tune
+    description: "Several communication preferences bear on one question."
+    query: "remind me of my communication preferences"
+    must_retrieve: [no_restate, short_answers, disagree]
+    may_retrieve: [study_group_calls]
+    must_not_retrieve: []
+    max_rank: 5
+    substantive_match_expected: true

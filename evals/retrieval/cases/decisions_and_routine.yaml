@@ -1,0 +1,64 @@
+# Decisions, a routine that changed (the newer one should lead), and an
+# ambiguous question. Later-listed memories are newer.
+version: 1
+fixture:
+  memories:
+    - {ref: gym_old, scope: user, kind: fact, subject: fitness, origin_tier: user_asserted,
+       content: "Janu's gym routine in September was three mornings a week."}
+    - {ref: storage_decision, scope: relationship, kind: decision, subject: apollo, origin_tier: user_asserted,
+       content: "Janu decided Apollo keeps everything in Postgres, with no vector store."}
+    - {ref: notes_decision, scope: user, kind: decision, subject: notes, origin_tier: user_asserted,
+       content: "Janu decided to move his notes from OneNote to plain Markdown files."}
+    - {ref: thesis_decision, scope: user, kind: decision, subject: study, origin_tier: user_asserted,
+       content: "Janu decided his thesis will be on consensus protocols."}
+    - {ref: gym_new, scope: user, kind: fact, subject: fitness, origin_tier: user_asserted,
+       content: "Janu's gym routine since November is four mornings a week, with Sundays off."}
+    - {ref: coffee, scope: user, kind: preference, subject: food, origin_tier: user_asserted,
+       content: "Janu drinks his coffee black."}
+    - {ref: bike, scope: user, kind: event, subject: sport, origin_tier: user_asserted,
+       content: "Janu bought a second-hand mountain bike in October."}
+
+cases:
+  - id: rec_001
+    type: recency_sensitive
+    split: tune
+    description: "Two gym routines match; the newer one should lead."
+    query: "what's my current gym routine?"
+    must_retrieve: [gym_new]
+    may_retrieve: [gym_old]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: rec_002
+    type: recency_sensitive
+    split: holdout
+    description: "The changed routine, asked about as it is now."
+    query: "how many mornings a week do I go to the gym now?"
+    must_retrieve: [gym_new]
+    may_retrieve: [gym_old]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: amb_001
+    type: ambiguous
+    split: tune
+    description: "Which decision? Several match; none is required, unrelated ones are not wanted."
+    query: "what did I decide?"
+    may_retrieve: [storage_decision, notes_decision, thesis_decision]
+    must_not_retrieve: []
+    substantive_match_expected: true
+
+  - id: amb_002
+    type: ambiguous
+    split: holdout
+    description: "A vague pointer that partly matches a decision and partly a routine."
+    query: "remind me about that thing I decided in September"
+    may_retrieve: [storage_decision, notes_decision, thesis_decision, gym_old]
+    substantive_match_expected: true
+
+  - id: noresult_003
+    type: no_result
+    split: tune
+    description: "Nothing recorded covers this."
+    query: "what's the wifi password?"
+    substantive_match_expected: false
