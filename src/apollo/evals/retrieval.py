@@ -42,7 +42,15 @@ import yaml
 
 from apollo.errors import ApolloError
 from apollo.memory import lifecycle
-from apollo.memory.models import Kind, Origin, OriginTier, Scope, SourceKind
+from apollo.memory.models import (
+    Kind,
+    MemoryInputError,
+    Origin,
+    OriginTier,
+    Scope,
+    SourceKind,
+    validate_claim,
+)
 from apollo.memory.retrieval import (
     LEXICAL,
     PINNED,
@@ -135,8 +143,53 @@ def load_case_files(directory: pathlib.Path) -> list[CaseFile]:
     return files
 
 
+class _RepeatedKeyError(Exception):
+    def __init__(self, key: str, line: int) -> None:
+        super().__init__(key, line)
+        self.key, self.line = key, line
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader, except a repeated mapping key is refused, not last-one-wins.
+
+    Plain `safe_load` keeps the later of two `must_retrieve:` lines, so a
+    fixture could quietly drop an expectation, and the corpus digest, taken
+    over the parsed result, would never see the discarded one. Merge keys
+    (`<<`) are refused too, as not valid YAML here: a fixture spells out what
+    it means.
+    """
+
+
+def _unique_mapping(loader: Any, node: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    pairs = loader.construct_pairs(node, deep=True)
+    for (key_node, _), (key, value) in zip(node.value, pairs, strict=True):
+        if not isinstance(key, str):
+            raise yaml.constructor.ConstructorError(
+                None, None, "a mapping key must be text", key_node.start_mark
+            )
+        if key in result:
+            raise _RepeatedKeyError(key, key_node.start_mark.line + 1)
+        result[key] = value
+    return result
+
+
+_UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _unique_mapping)
+
+
+def _read_yaml(path: pathlib.Path) -> Any:
+    try:
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    except _RepeatedKeyError as exc:
+        raise RetrievalFixtureError(
+            f"{path.name}: line {exc.line} repeats the key {exc.key!r}"
+        ) from None
+    except yaml.YAMLError as exc:
+        raise RetrievalFixtureError(f"{path.name}: not valid YAML: {exc}") from None
+
+
 def load_case_file(path: pathlib.Path) -> CaseFile:
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = _read_yaml(path)
     where = path.name
     _require_mapping(raw, where, FILE_FIELDS, required=FILE_FIELDS)
     if raw["version"] != 1:
@@ -164,12 +217,20 @@ def _memory(raw: Any, where: str) -> FixtureMemory:
         raise RetrievalFixtureError(
             f"{here}: fixtures support one direct `asserts` observation only"
         )
+    subject = _text(raw["subject"], here, "subject")
+    content = _text(raw["content"], here, "content")
+    try:
+        # The rule the memory store applies when the fixture is loaded; checked
+        # here so a bad claim is a fixture error, named, before any database.
+        validate_claim(subject, content)
+    except MemoryInputError as exc:
+        raise RetrievalFixtureError(f"{here}: {exc}") from None
     try:
         return FixtureMemory(
             ref=raw["ref"], scope=Scope(_text(raw["scope"], here, "scope")),
             kind=Kind(_text(raw["kind"], here, "kind")),
-            subject=_text(raw["subject"], here, "subject"),
-            content=_text(raw["content"], here, "content"),
+            subject=subject,
+            content=content,
             origin_tier=OriginTier(_text(raw["origin_tier"], here, "origin_tier")),
             status=status,
             pinned=_bool(raw.get("pinned", False), here, "pinned"),

@@ -201,3 +201,42 @@ def test_a_memory_can_be_corrected_only_once(tmp_path: pathlib.Path) -> None:
     ))
     with pytest.raises(RetrievalFixtureError, match="corrected more than once"):
         load_case_file(path)
+
+
+@pytest.mark.parametrize(("memory", "error"), [
+    ("{ref: a, scope: user, kind: fact, subject: '', content: c, origin_tier: user_asserted}",
+     "subject must be non-empty"),
+    ("{ref: a, scope: user, kind: fact, subject: s, content: '   ', origin_tier: user_asserted}",
+     "content must be non-empty"),
+    ('{ref: a, scope: user, kind: fact, subject: s, content: "a\\0b", origin_tier: user_asserted}',
+     "NUL"),
+], ids=["empty-subject", "blank-content", "nul-content"])
+def test_a_claim_the_memory_store_would_refuse_is_refused_at_load(
+    tmp_path: pathlib.Path, memory: str, error: str
+) -> None:
+    """The loader's error, not a database-time MemoryInputError, names the bad fixture."""
+    path = _write(tmp_path, (
+        f"version: 1\nfixture:\n  memories:\n    - {memory}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match=error):
+        load_case_file(path)
+
+
+@pytest.mark.parametrize("text", [
+    # A repeated expectation key: the later, weaker one would silently win.
+    "version: 1\nfixture:\n  memories:\n" + GOOD_MEMORY + "cases:\n"
+    "  - id: x\n    type: direct_fact\n    split: tune\n    description: d\n    query: q\n"
+    "    must_retrieve: [a]\n    must_retrieve: []\n",
+    # A repeated top-level key.
+    "version: 1\nversion: 1\nfixture:\n  memories:\n" + GOOD_MEMORY
+    + "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n",
+], ids=["case-key", "top-level-key"])
+def test_a_repeated_mapping_key_is_refused(tmp_path: pathlib.Path, text: str) -> None:
+    with pytest.raises(RetrievalFixtureError, match="repeats the key"):
+        load_case_file(_write(tmp_path, text))
+
+
+def test_unparseable_yaml_is_a_fixture_error(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(RetrievalFixtureError, match="not valid YAML"):
+        load_case_file(_write(tmp_path, "version: 1\nfixture: [unclosed\n"))
