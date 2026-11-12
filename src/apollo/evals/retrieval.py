@@ -182,7 +182,7 @@ def _check_corrections(memories: tuple[FixtureMemory, ...], where: str) -> None:
         if memory.corrects is None:
             continue
         old = by_ref.get(memory.corrects)
-        if old is None or memories.index(old) > index:
+        if old is None or memories.index(old) >= index:
             raise RetrievalFixtureError(
                 f"{where}: {memory.ref} corrects {memory.corrects!r}, which must be listed first"
             )
@@ -212,7 +212,11 @@ def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
         raise RetrievalFixtureError(f"{here}: split must be one of {SPLITS}")
     lists = {}
     for name in ("must_retrieve", "may_retrieve", "must_not_retrieve"):
-        values = tuple(_text(v, here, f"each of {name}") for v in raw.get(name, []) or [])
+        given = raw.get(name, [])
+        if not isinstance(given, list):
+            # A blank, `false` or `{}` must not quietly become "expect nothing".
+            raise RetrievalFixtureError(f"{here}: {name} must be a list")
+        values = tuple(_text(v, here, f"each of {name}") for v in given)
         unknown = sorted(set(values) - refs)
         if unknown:
             raise RetrievalFixtureError(f"{here}: {name} names unknown refs {unknown}")
@@ -220,6 +224,9 @@ def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
     overlap = set(lists["must_retrieve"]) & set(lists["must_not_retrieve"])
     if overlap:
         raise RetrievalFixtureError(f"{here}: both must and must-not: {sorted(overlap)}")
+    overlap = set(lists["may_retrieve"]) & set(lists["must_not_retrieve"])
+    if overlap:
+        raise RetrievalFixtureError(f"{here}: both allowed and forbidden: {sorted(overlap)}")
     expected = raw.get("substantive_match_expected")
     if expected is not None:
         expected = _bool(expected, here, "substantive_match_expected")

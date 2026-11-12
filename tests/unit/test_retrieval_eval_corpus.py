@@ -126,3 +126,37 @@ def test_a_correction_must_keep_its_predecessors_metadata(tmp_path: pathlib.Path
     ))
     with pytest.raises(RetrievalFixtureError, match="must keep"):
         load_case_file(path)
+
+
+def test_a_memory_cannot_correct_itself(tmp_path: pathlib.Path) -> None:
+    path = _write(tmp_path, (
+        "version: 1\nfixture:\n  memories:\n"
+        "    - {ref: a, scope: user, kind: fact, subject: s, content: c,"
+        " origin_tier: user_asserted, status: superseded, corrects: a}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="must be listed first"):
+        load_case_file(path)
+
+
+@pytest.mark.parametrize(
+    "value", ["false", "{}", "", "a"], ids=["false", "mapping", "blank", "bare"]
+)
+def test_an_expectation_that_is_not_a_list_is_refused(tmp_path: pathlib.Path, value: str) -> None:
+    path = _write(tmp_path, (
+        f"version: 1\nfixture:\n  memories:\n{GOOD_MEMORY}cases:\n"
+        "  - id: x\n    type: no_result\n    split: tune\n    description: d\n    query: q\n"
+        f"    must_retrieve: {value}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="must_retrieve must be a list"):
+        load_case_file(path)
+
+
+def test_a_ref_both_allowed_and_forbidden_is_refused(tmp_path: pathlib.Path) -> None:
+    path = _write(tmp_path, (
+        f"version: 1\nfixture:\n  memories:\n{GOOD_MEMORY}cases:\n"
+        "  - {id: x, type: no_result, split: tune, description: d, query: q,"
+        " may_retrieve: [a], must_not_retrieve: [a]}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="both allowed and forbidden"):
+        load_case_file(path)
