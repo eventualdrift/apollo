@@ -10,6 +10,30 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-12): review fixes done, CI, migration checksums — next is step 11
+
+The updates below are unchanged. **Working rule since 2026-11-12 (Janu):** Claude pushes and
+answers Codex itself, and merges each PR (merge commit) once CI is green on its head and Codex
+has no open P0/P1, then reports what merged. Model runs, spec changes and deployment decisions
+stay Janu's.
+
+- **CI (#16):** every PR and every push to `claude/**` runs ruff, strict mypy and the full suite
+  against a real PostgreSQL 16 (`.github/workflows/ci.yml`).
+- **All four review fixes are merged:**
+  - #14 history truncation;
+  - #15 `chat-v2`, with the `chat-v1` guard tests below;
+  - #17 provider failures classified, only transport failures retried, and a truthful note per class;
+  - #18 finalisation requires a `started` row, so a late result never overwrites orphan recovery.
+- **Orphan recovery notes the turn (#19):** an interrupted turn gets its `system_note` and audit
+  event like any failed turn (spec A.2). Lock order is now turn, then conversation, in every
+  finalisation, and message seq is allocated under the conversation's row lock, so concurrent
+  appends to one conversation can neither deadlock nor collide.
+- **Migration checksums (backlog item, done):**
+  - Each applied migration is recorded with a sha256 of its text, with line endings normalised.
+  - `migrate()` refuses the whole run, applying nothing, if a recorded migration's file was edited or is missing.
+  - Rows from before checksums (0001–0004) are adopted only when their file matches the pinned version (`PRE_CHECKSUM_SHA256`). Each of those files has exactly one version on the base branch: all edits to 0003 landed together in #8.
+- **Still open:** step 11's design takes findings 1 and 7; step 12 takes finding 15.
+
 ## Update (2026-09-28): render_version `chat-v2` (review fix 2 of 4)
 
 The step 10 update below is unchanged. After a failed turn, the next request rendered two user

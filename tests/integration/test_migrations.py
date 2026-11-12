@@ -116,3 +116,101 @@ def test_recency_can_never_be_recorded_as_substantive(db: Database) -> None:
                 " VALUES (gen_random_uuid(), %s, 'recency', 3, true, 1, now())",
                 (turn,),
             )
+
+
+# -- a digest per applied migration ---------------------------------------------
+
+
+def _copy_migrations(tmp_path, monkeypatch):  # noqa: ANN001, ANN202
+    """A private copy of the migrations directory the runner will read instead."""
+    import shutil
+
+    from apollo.storage import db as db_module
+
+    copy = tmp_path / "migrations"
+    shutil.copytree(db_module.MIGRATIONS_DIR, copy)
+    monkeypatch.setattr(db_module, "MIGRATIONS_DIR", copy)
+    return copy
+
+
+def _recorded(owner_db: Database) -> dict[str, str | None]:
+    return {r["name"]: r["sha256"]
+            for r in _rows(owner_db, "SELECT name, sha256 FROM schema_migration")}
+
+
+def test_every_applied_migration_is_recorded_with_its_digest(owner_db: Database) -> None:
+    from apollo.storage.db import MIGRATIONS_DIR, migration_sha256
+
+    expected = {p.name: migration_sha256(p.read_text(encoding="utf-8"))
+                for p in MIGRATIONS_DIR.glob("*.sql")}
+    assert _recorded(owner_db) == expected
+
+
+def test_an_edited_applied_migration_refuses_the_run(
+    owner_db: Database, tmp_path, monkeypatch
+) -> None:
+    from apollo.errors import MigrationChecksumError
+
+    copy = _copy_migrations(tmp_path, monkeypatch)
+    (copy / "0099_new.sql").write_text("CREATE TABLE should_not_exist (id int);\n")
+    edited = copy / "0002_tombstone_preserves_provenance.sql"
+    edited.write_text(edited.read_text() + "\n-- edited after it was applied\n")
+    before = _recorded(owner_db)
+
+    with pytest.raises(MigrationChecksumError, match="0002_tombstone_preserves_provenance"):
+        owner_db.migrate()
+    # Nothing was applied: not even the new, unrelated migration.
+    assert _recorded(owner_db) == before
+    assert not _rows(owner_db, "SELECT 1 FROM pg_tables WHERE tablename = 'should_not_exist'")
+
+
+def test_a_recorded_migration_whose_file_is_missing_refuses_the_run(
+    owner_db: Database, tmp_path, monkeypatch
+) -> None:
+    from apollo.errors import MigrationChecksumError
+
+    copy = _copy_migrations(tmp_path, monkeypatch)
+    (copy / "0004_invocation_manifest_shape.sql").unlink()
+    with pytest.raises(MigrationChecksumError, match="0004_invocation_manifest_shape.*missing"):
+        owner_db.migrate()
+
+
+def test_a_new_migration_is_applied_and_recorded_with_its_digest(
+    owner_db: Database, tmp_path, monkeypatch
+) -> None:
+    from apollo.storage.db import migration_sha256
+
+    copy = _copy_migrations(tmp_path, monkeypatch)
+    text = "CREATE TABLE checksum_probe (id int);\n"
+    (copy / "0099_probe.sql").write_text(text)
+    assert owner_db.migrate() == ["0099_probe.sql"]
+    assert _recorded(owner_db)["0099_probe.sql"] == migration_sha256(text)
+    assert owner_db.migrate() == []
+
+
+def test_a_deployment_from_before_checksums_is_adopted_when_its_files_match(
+    owner_db: Database,
+) -> None:
+    """Rows recorded by name only get their digest, after it matches the known version."""
+    from apollo.storage.db import PRE_CHECKSUM_SHA256
+
+    with owner_db.connect() as conn, conn.cursor() as cur:
+        cur.execute("ALTER TABLE schema_migration DROP COLUMN sha256")
+    assert owner_db.migrate() == []
+    assert _recorded(owner_db) == PRE_CHECKSUM_SHA256
+    assert owner_db.migrate() == []
+
+
+def test_a_deployment_from_before_checksums_is_refused_when_a_file_changed(
+    owner_db: Database, tmp_path, monkeypatch
+) -> None:
+    from apollo.errors import MigrationChecksumError
+
+    copy = _copy_migrations(tmp_path, monkeypatch)
+    edited = copy / "0003_memory_lifecycle.sql"
+    edited.write_text(edited.read_text() + "\n-- edited\n")
+    with owner_db.connect() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE schema_migration SET sha256 = NULL")
+    with pytest.raises(MigrationChecksumError, match="0003_memory_lifecycle.*before checksums"):
+        owner_db.migrate()
+    assert set(_recorded(owner_db).values()) == {None}
