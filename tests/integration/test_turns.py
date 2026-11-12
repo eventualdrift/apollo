@@ -242,5 +242,48 @@ def test_orphan_recovery_marks_interrupted(db, service, clock) -> None:
             (conv, msg, stale_at),
         )
     assert service.recover_orphans()["turns"] == 1
-    stale = rows(db, "SELECT status, error_kind FROM turn WHERE error_kind = 'interrupted'")
+    stale = rows(db, "SELECT id, status, error_kind FROM turn WHERE error_kind = 'interrupted'")
     assert stale and stale[0]["status"] == "failed"
+
+    # Finalised as any failed turn is: with its note, and the note's audit event.
+    from apollo.core.turns import SYSTEM_NOTES
+    from apollo.errors import ErrorKind
+
+    [note] = rows(db, "SELECT * FROM message WHERE role = 'system_note' AND conversation_id = %s",
+                  (conv,))
+    assert note["content"] == SYSTEM_NOTES[ErrorKind.INTERRUPTED]
+    assert note["turn_id"] == stale[0]["id"]
+    assert note["seq"] == 100  # after the orphaned request
+    [event] = rows(db, "SELECT * FROM audit_event WHERE event_type = 'message.created'"
+                       " AND subject_id = %s", (note["id"],))
+    assert event["actor"] == "system" and event["turn_id"] == stale[0]["id"]
+
+
+def test_orphan_recovery_notes_each_interrupted_turn_in_order(db, service, clock) -> None:
+    from datetime import timedelta
+
+    conv = new_conversation(db, clock)
+    turn_ids = []
+    with db.connect() as conn, conn.cursor() as cur:
+        for seq, hours in ((1, 3), (2, 2)):
+            started = clock.now - timedelta(hours=hours)
+            cur.execute(
+                "INSERT INTO message (id, conversation_id, seq, role, content, created_at)"
+                " VALUES (gen_random_uuid(), %s, %s, 'user', 'orphaned', %s) RETURNING id",
+                (conv, seq, started),
+            )
+            msg = cur.fetchone()["id"]
+            cur.execute(
+                "INSERT INTO turn (id, conversation_id, request_message_id, status,"
+                " conversation_mode, identity_version, identity_hash, started_at)"
+                " VALUES (gen_random_uuid(), %s, %s, 'started', 'personal', 'v', 'h', %s)"
+                " RETURNING id",
+                (conv, msg, started),
+            )
+            turn_ids.append(cur.fetchone()["id"])
+
+    assert service.recover_orphans()["turns"] == 2
+    notes = rows(db, "SELECT turn_id FROM message WHERE role = 'system_note'"
+                     " AND conversation_id = %s ORDER BY seq", (conv,))
+    assert [n["turn_id"] for n in notes] == turn_ids
+    assert service.recover_orphans() == {"turns": 0, "invocations": 0}

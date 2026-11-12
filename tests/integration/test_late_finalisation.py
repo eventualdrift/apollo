@@ -23,9 +23,11 @@ import pytest
 from apollo.brains.base import GenerationParams, RenderedRequest
 from apollo.brains.fake import FakeBrain
 from apollo.core.conversations import create_conversation, transcript
+from apollo.core.turns import SYSTEM_NOTES
 from apollo.errors import (
     BrainServiceError,
     BrainTransportError,
+    ErrorKind,
     FinalisationConflictError,
 )
 from apollo.storage.db import Database
@@ -91,15 +93,19 @@ def _assert_left_as_recovery_recorded(db, conversation_id, result) -> None:  # n
     assert invocation["rendered_prompt_hash"] is None
     assert invocation["model_identifier"] is None
 
-    # Janu's message, and nothing after it: no reply, no second note.
-    assert [m["role"] for m in transcript(db, conversation_id)] == ["user"]
+    # Janu's message and recovery's interrupted note: no reply, no second note.
+    messages = transcript(db, conversation_id)
+    assert [m["role"] for m in messages] == ["user", "system_note"]
+    assert messages[1]["content"] == SYSTEM_NOTES[ErrorKind.INTERRUPTED]
 
     # Nothing in the audit log claims an outcome the rows do not show.
     events = [r["event_type"] for r in _rows(
         db, "SELECT event_type FROM audit_event WHERE turn_id = %s ORDER BY id",
         (result.turn_id,),
     )]
-    assert events == ["message.created", "turn.started", "invocation.started"]
+    # Janu's message, the turn, the call, and recovery's note: nothing else.
+    assert events == ["message.created", "turn.started", "invocation.started",
+                      "message.created"]
 
 
 def test_a_late_completion_does_not_overwrite_orphan_recovery(
@@ -176,3 +182,153 @@ def test_finalising_an_invocation_twice_raises_and_changes_nothing(db, service, 
         )
     assert _rows(db, "SELECT * FROM model_invocation WHERE id = %s",
                  (invocation_id,)) == [before]
+
+
+# -- lock order: recovery and completion take the turn row first ----------------
+
+
+def test_completion_waits_for_recovery_instead_of_deadlocking(
+    db, service_factory, clock
+) -> None:
+    """Recovery locks the turn, then appends its note. Completion must lock in that order.
+
+    Recovery's transaction is held open here, past its turn lock, while the
+    late result arrives. If completion inserted its reply before taking the
+    turn lock, it would hold the conversation's next message seq, and
+    recovery's note would wait on it while completion waited on the turn:
+    a deadlock. Completion takes the turn lock first, so recovery's note goes
+    in, recovery commits, and completion finds the turn already finalised.
+    """
+    import threading
+    import time as _time
+
+    import psycopg
+
+    conversation_id = create_conversation(db, now=clock())
+    recovery_holds_the_turn = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def recovery_in_another_process(turn_id) -> None:  # noqa: ANN001
+        with psycopg.connect(db._dsn, autocommit=False) as conn, conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '5s'")
+            cur.execute(
+                "UPDATE turn SET status = 'failed', completed_at = now(),"
+                " error_kind = 'interrupted' WHERE id = %s AND status = 'started'"
+                " RETURNING conversation_id",
+                (turn_id,),
+            )
+            [(conv,)] = cur.fetchall()
+            recovery_holds_the_turn.set()
+            # Wait until the late completion is blocked behind this transaction.
+            deadline = _time.monotonic() + 5
+            while _time.monotonic() < deadline:
+                cur.execute("SELECT count(*) FROM pg_locks WHERE NOT granted")
+                if cur.fetchone()[0]:
+                    break
+                _time.sleep(0.02)
+            else:
+                outcome["recovery"] = "completion never waited for the turn lock"
+                return
+            try:
+                cur.execute(
+                    "INSERT INTO message (id, conversation_id, seq, role, content, created_at,"
+                    " turn_id) SELECT gen_random_uuid(), %s, coalesce(max(seq), 0) + 1,"
+                    " 'system_note', 'interrupted', now(), %s FROM message"
+                    " WHERE conversation_id = %s",
+                    (conv, turn_id, conv),
+                )
+            except psycopg.errors.Error as exc:
+                outcome["recovery"] = type(exc).__name__
+                return
+            conn.commit()
+            outcome["recovery"] = "committed"
+
+    class LateBrain(FakeBrain):
+        def generate(self, req: RenderedRequest, params: GenerationParams):  # type: ignore[no-untyped-def]
+            [turn] = _rows(db, "SELECT id FROM turn WHERE status = 'started'")
+            worker = threading.Thread(target=recovery_in_another_process, args=(turn["id"],))
+            worker.start()
+            outcome["worker"] = worker
+            assert recovery_holds_the_turn.wait(5)
+            return super().generate(req, params)
+
+    result = service_factory(brain=LateBrain(key="fake")).submit(
+        conversation_id=conversation_id, text="A question that takes too long"
+    )
+    outcome["worker"].join(10)  # type: ignore[attr-defined]
+
+    assert outcome["recovery"] == "committed"
+    assert (result.status, result.error_kind) == ("failed", "interrupted")
+    assert [m["role"] for m in transcript(db, conversation_id)] == ["user", "system_note"]
+
+
+def test_recovery_and_another_append_to_the_same_conversation_both_land(
+    db, service, clock
+) -> None:
+    """Message seq is allocated one appender at a time per conversation.
+
+    Another process appends to a conversation and holds its transaction open
+    while recovery notes an orphaned turn in the same conversation. Both read
+    the same max(seq); without a per-conversation lock, recovery would fail on
+    the seq's unique constraint and roll back its whole batch.
+    """
+    import threading
+    import time as _time
+    from datetime import timedelta as _timedelta
+
+    import psycopg
+
+    from apollo.storage.repositories import MessageRepository
+
+    conversation_id = create_conversation(db, now=clock())
+    stale = clock.now - _timedelta(hours=2)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO message (id, conversation_id, seq, role, content, created_at)"
+            " VALUES (gen_random_uuid(), %s, 1, 'user', 'orphaned', %s) RETURNING id",
+            (conversation_id, stale),
+        )
+        request_id = cur.fetchone()["id"]
+        cur.execute(
+            "INSERT INTO turn (id, conversation_id, request_message_id, status,"
+            " conversation_mode, identity_version, identity_hash, started_at)"
+            " VALUES (gen_random_uuid(), %s, %s, 'started', 'personal', 'v', 'h', %s)",
+            (conversation_id, request_id, stale),
+        )
+
+    appended = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def append_in_another_process() -> None:
+        try:
+            with unit_of_work(db, expect_audit=False) as uow:
+                MessageRepository(uow).append(
+                    conversation_id=conversation_id, role="user", content="meanwhile",
+                    now=clock.now,
+                )
+                appended.set()
+                with psycopg.connect(db._dsn, autocommit=True) as watcher:
+                    deadline = _time.monotonic() + 5
+                    while _time.monotonic() < deadline:
+                        if watcher.execute("SELECT count(*) FROM pg_locks"
+                                           " WHERE NOT granted").fetchone()[0]:
+                            break
+                        _time.sleep(0.02)
+            outcome["append"] = "committed"
+        except Exception as exc:  # noqa: BLE001
+            outcome["append"] = type(exc).__name__
+            appended.set()
+
+    worker = threading.Thread(target=append_in_another_process)
+    worker.start()
+    assert appended.wait(5)
+    try:
+        recovered = service.recover_orphans()
+    except psycopg.errors.Error as exc:
+        recovered = type(exc).__name__  # type: ignore[assignment]
+    worker.join(10)
+
+    assert outcome["append"] == "committed"
+    assert recovered == {"turns": 1, "invocations": 0}
+    seqs = [(m["seq"], m["role"]) for m in transcript(db, conversation_id)]
+    assert seqs == [(1, "user"), (2, "user"), (3, "system_note")]

@@ -29,6 +29,14 @@ class MessageRepository:
         truncated: bool = False,
     ) -> dict[str, Any]:
         message_id = uuid7()
+        # seq is max(seq) + 1, so two transactions appending to one conversation
+        # at once would read the same max and one would fail on message_seq_uq.
+        # The conversation's row lock makes allocation one appender at a time;
+        # it is held to the end of the transaction. Lock order is turn, then
+        # conversation: every finalisation locks its turn before appending.
+        self._uow.execute(
+            "SELECT 1 FROM conversation WHERE id = %s FOR NO KEY UPDATE", (conversation_id,)
+        )
         cur = self._uow.execute(
             "INSERT INTO message (id, conversation_id, seq, role, content, created_at,"
             "  device_id, turn_id, client_idempotency_key, truncated)"

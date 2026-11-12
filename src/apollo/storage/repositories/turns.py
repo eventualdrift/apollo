@@ -40,6 +40,22 @@ class TurnRepository:
         )
         return turn_id
 
+    def lock_started(self, turn_id: uuid.UUID) -> None:
+        """Take the turn's row lock first in a finalisation that writes a message.
+
+        Every transaction that finalises a turn locks the turn row before it
+        appends a message: failure finalisation and orphan recovery update the
+        turn first, and completion calls this before appending its reply. One
+        order means a late completion waits behind recovery rather than holding
+        the conversation's next message seq while recovery holds the turn,
+        which deadlocks. Raises if the turn is no longer `started`.
+        """
+        cur = self._uow.execute(
+            "SELECT 1 FROM turn WHERE id = %s AND status = 'started' FOR UPDATE", (turn_id,)
+        )
+        if cur.fetchone() is None:
+            raise FinalisationConflictError(table="turn", row_id=turn_id)
+
     def complete(
         self,
         *,
@@ -81,14 +97,20 @@ class TurnRepository:
         row: dict[str, Any] | None = cur.fetchone()
         return row
 
-    def expire_orphans(self, *, older_than: datetime, now: datetime) -> int:
-        """Turns left `started` beyond the window become `interrupted` (spec A.2)."""
+    def expire_orphans(self, *, older_than: datetime, now: datetime) -> list[dict[str, Any]]:
+        """Turns left `started` beyond the window become `interrupted` (spec A.2).
+
+        Returns each expired turn's id and conversation, oldest first, so the
+        caller can finalise them as any failed turn is: with a `system_note`.
+        """
         cur = self._uow.execute(
             "UPDATE turn SET status = 'failed', completed_at = %s, error_kind = 'interrupted'"
-            " WHERE status = 'started' AND started_at < %s RETURNING id",
+            " WHERE status = 'started' AND started_at < %s"
+            " RETURNING id, conversation_id, started_at",
             (now, older_than),
         )
-        return len(cur.fetchall())
+        rows: list[dict[str, Any]] = cur.fetchall()
+        return sorted(rows, key=lambda row: (row["started_at"], row["id"]))
 
 
 def _require_one_row(rowcount: int, turn_id: uuid.UUID) -> None:

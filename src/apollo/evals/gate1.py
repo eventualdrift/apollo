@@ -250,6 +250,7 @@ def _complete_turn(
     now: datetime,
 ) -> None:
     with unit_of_work(db) as uow:
+        TurnRepository(uow).lock_started(turn_id)
         message = MessageRepository(uow).append(
             conversation_id=conversation_id,
             role="apollo",
