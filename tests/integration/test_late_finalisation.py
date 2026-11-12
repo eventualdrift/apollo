@@ -260,3 +260,75 @@ def test_completion_waits_for_recovery_instead_of_deadlocking(
     assert outcome["recovery"] == "committed"
     assert (result.status, result.error_kind) == ("failed", "interrupted")
     assert [m["role"] for m in transcript(db, conversation_id)] == ["user", "system_note"]
+
+
+def test_recovery_and_another_append_to_the_same_conversation_both_land(
+    db, service, clock
+) -> None:
+    """Message seq is allocated one appender at a time per conversation.
+
+    Another process appends to a conversation and holds its transaction open
+    while recovery notes an orphaned turn in the same conversation. Both read
+    the same max(seq); without a per-conversation lock, recovery would fail on
+    the seq's unique constraint and roll back its whole batch.
+    """
+    import threading
+    import time as _time
+    from datetime import timedelta as _timedelta
+
+    import psycopg
+
+    from apollo.storage.repositories import MessageRepository
+
+    conversation_id = create_conversation(db, now=clock())
+    stale = clock.now - _timedelta(hours=2)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO message (id, conversation_id, seq, role, content, created_at)"
+            " VALUES (gen_random_uuid(), %s, 1, 'user', 'orphaned', %s) RETURNING id",
+            (conversation_id, stale),
+        )
+        request_id = cur.fetchone()["id"]
+        cur.execute(
+            "INSERT INTO turn (id, conversation_id, request_message_id, status,"
+            " conversation_mode, identity_version, identity_hash, started_at)"
+            " VALUES (gen_random_uuid(), %s, %s, 'started', 'personal', 'v', 'h', %s)",
+            (conversation_id, request_id, stale),
+        )
+
+    appended = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def append_in_another_process() -> None:
+        try:
+            with unit_of_work(db, expect_audit=False) as uow:
+                MessageRepository(uow).append(
+                    conversation_id=conversation_id, role="user", content="meanwhile",
+                    now=clock.now,
+                )
+                appended.set()
+                with psycopg.connect(db._dsn, autocommit=True) as watcher:
+                    deadline = _time.monotonic() + 5
+                    while _time.monotonic() < deadline:
+                        if watcher.execute("SELECT count(*) FROM pg_locks"
+                                           " WHERE NOT granted").fetchone()[0]:
+                            break
+                        _time.sleep(0.02)
+            outcome["append"] = "committed"
+        except Exception as exc:  # noqa: BLE001
+            outcome["append"] = type(exc).__name__
+            appended.set()
+
+    worker = threading.Thread(target=append_in_another_process)
+    worker.start()
+    assert appended.wait(5)
+    try:
+        recovered = service.recover_orphans()
+    except psycopg.errors.Error as exc:
+        recovered = type(exc).__name__  # type: ignore[assignment]
+    worker.join(10)
+
+    assert outcome["append"] == "committed"
+    assert recovered == {"turns": 1, "invocations": 0}
+    seqs = [(m["seq"], m["role"]) for m in transcript(db, conversation_id)]
+    assert seqs == [(1, "user"), (2, "user"), (3, "system_note")]
