@@ -125,7 +125,11 @@ class OpenAICompatibleBrain:
 
     def render(self, bundle: ContextBundle) -> RenderedRequest:
         """The shared four-region chat rendering, verified on every call."""
-        return render_chat(bundle, supports_system_role=self._supports_system_role)
+        return render_chat(
+            bundle,
+            supports_system_role=self._supports_system_role,
+            render_version=self.render_version,
+        )
 
     def generate(self, req: RenderedRequest, params: GenerationParams) -> Generation:
         payload: dict[str, Any] = {

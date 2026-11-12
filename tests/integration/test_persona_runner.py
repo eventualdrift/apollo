@@ -86,7 +86,7 @@ class LeakyBrain:
     what Core must never persist."""
 
     adapter_key = "openai_compatible"
-    render_version = "chat-v1"
+    render_version = "chat-v2"
     key = "leaky"
 
     def __init__(self) -> None:
@@ -209,7 +209,7 @@ def test_every_generation_is_a_recorded_invocation(db, runner_factory, cases) ->
             assert row["purpose"] == "reply"
             assert row["brain_alias"] == "brain.default"
             assert row["adapter_key"] == "fake"
-            assert row["render_version"] == "chat-v1"
+            assert row["render_version"] == "chat-v2"
             assert row["context_bundle_hash"]
             assert row["has_manifest"]
             assert row["token_estimator"] == "conservative-v1"

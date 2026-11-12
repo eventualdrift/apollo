@@ -42,7 +42,7 @@ def test_ordinary_turn_records_one_reply_invocation(db, service, clock) -> None:
     inv = invocations[0]
     assert (inv["purpose"], inv["status"], inv["seq"]) == ("reply", "completed", 1)
     assert inv["adapter_key"] == "fake"
-    assert inv["render_version"] == "chat-v1"
+    assert inv["render_version"] == "chat-v2"
     assert inv["compiler_version"] == "compiler-v1"
     assert inv["token_estimator"] == "conservative-v1"
     assert inv["context_bundle_hash"] and inv["rendered_prompt_hash"]

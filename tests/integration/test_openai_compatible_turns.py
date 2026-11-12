@@ -104,7 +104,7 @@ def test_an_ordinary_turn_through_the_real_adapter(db, adapter_service, clock) -
         )
         invocation = cur.fetchone()
     assert invocation["adapter_key"] == "openai_compatible"
-    assert invocation["render_version"] == "chat-v1"
+    assert invocation["render_version"] == "chat-v2"
     assert invocation["model_identifier"] == "served-model-v1"
     assert invocation["prompt_tokens"] == 120
     assert invocation["completion_tokens"] == 9

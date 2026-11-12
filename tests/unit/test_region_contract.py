@@ -396,10 +396,21 @@ FENCE_SHAPED_CASES = [
 
 @pytest.mark.parametrize("content", FENCE_SHAPED_CASES)
 def test_fence_shaped_user_history_still_renders(content: str) -> None:
-    bundle = a_bundle(history=[HistoryMessage("m1", "user", content)])
+    bundle = a_bundle(history=[HistoryMessage("m1", "user", content),
+                               HistoryMessage("m2", "apollo", "Noted.")])
     request = render_chat(bundle)
     verify_region_contract(bundle, request)  # must not raise
     assert any(m.role == "user" and m.content == content for m in request.messages)
+
+
+@pytest.mark.parametrize("content", FENCE_SHAPED_CASES)
+def test_fence_shaped_unanswered_user_history_still_renders(content: str) -> None:
+    """A failed turn's message opens the final user message; the verifier still finds it."""
+    bundle = a_bundle(history=[HistoryMessage("m1", "user", content)])
+    request = render_chat(bundle)
+    verify_region_contract(bundle, request)  # must not raise
+    assert [m.role for m in request.messages] == ["system", "user"]
+    assert request.messages[-1].content.startswith(content + "\n\n")
 
 
 @pytest.mark.parametrize("content", FENCE_SHAPED_CASES)

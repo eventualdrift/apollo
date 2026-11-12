@@ -79,7 +79,7 @@ class FakeBrain:
         )
 
     def render(self, bundle: ContextBundle) -> RenderedRequest:
-        return render_chat(bundle, supports_system_role=True)
+        return render_chat(bundle, supports_system_role=True, render_version=self.render_version)
 
     def generate(self, req: RenderedRequest, params: GenerationParams) -> Generation:
         started = time.monotonic()
