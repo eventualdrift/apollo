@@ -5,6 +5,7 @@ from apollo.storage.repositories.identity import IdentityVersionRepository
 from apollo.storage.repositories.invocations import InvocationRepository
 from apollo.storage.repositories.memories import MemoryRepository
 from apollo.storage.repositories.messages import MessageRepository
+from apollo.storage.repositories.retrieval import RetrievalRepository
 from apollo.storage.repositories.turns import TurnRepository
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "InvocationRepository",
     "MemoryRepository",
     "MessageRepository",
+    "RetrievalRepository",
     "TurnRepository",
 ]
