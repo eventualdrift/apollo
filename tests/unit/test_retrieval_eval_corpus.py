@@ -187,3 +187,17 @@ def test_the_corpus_digest_changes_with_any_case_or_memory(tmp_path: pathlib.Pat
     assert digest(base + ", max_rank: 3}") != original
     assert digest(base.replace("must_retrieve: [a]", "may_retrieve: [a]") + "}") != original
     assert digest(base.replace("query: q", "query: r") + "}") != original
+
+
+def test_a_memory_can_be_corrected_only_once(tmp_path: pathlib.Path) -> None:
+    """A chain does not branch: the first correction supersedes, the second has nothing to."""
+    base = "scope: user, kind: fact, subject: s, origin_tier: user_asserted"
+    path = _write(tmp_path, (
+        "version: 1\nfixture:\n  memories:\n"
+        f"    - {{ref: old, {base}, content: c, status: superseded}}\n"
+        f"    - {{ref: one, {base}, content: d, corrects: old}}\n"
+        f"    - {{ref: two, {base}, content: e, corrects: old}}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="corrected more than once"):
+        load_case_file(path)

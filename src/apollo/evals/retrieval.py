@@ -181,9 +181,14 @@ def _memory(raw: Any, where: str) -> FixtureMemory:
 
 def _check_corrections(memories: tuple[FixtureMemory, ...], where: str) -> None:
     by_ref = {m.ref: m for m in memories}
+    corrected: set[str] = set()
     for index, memory in enumerate(memories):
         if memory.corrects is None:
             continue
+        if memory.corrects in corrected:
+            # A chain does not branch (spec D.5): once superseded, a row is not active.
+            raise RetrievalFixtureError(f"{where}: {memory.corrects} is corrected more than once")
+        corrected.add(memory.corrects)
         old = by_ref.get(memory.corrects)
         if old is None or memories.index(old) >= index:
             raise RetrievalFixtureError(
