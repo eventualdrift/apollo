@@ -37,6 +37,15 @@ class ConfigError(ApolloError):
     pass
 
 
+class MigrationChecksumError(ApolloError):
+    """An applied migration no longer matches its file. Nothing is applied.
+
+    A migration is recorded by name and digest when applied. Editing it
+    afterwards would leave the database on a schema the code no longer
+    describes, so the runner refuses rather than ignore the edit.
+    """
+
+
 class IdentityOverflowError(ApolloError):
     kind = ErrorKind.IDENTITY_OVERFLOW
 

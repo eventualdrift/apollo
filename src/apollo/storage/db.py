@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import pathlib
 import threading
@@ -14,11 +15,34 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import DictRow, dict_row
 
-from apollo.errors import ApolloError
+from apollo.errors import ApolloError, MigrationChecksumError
 
 log = logging.getLogger(__name__)
 
 MIGRATIONS_DIR = pathlib.Path(__file__).parent / "migrations"
+
+#: Digests of the migrations applied before the runner recorded checksums. Each
+#: file has exactly one version on the base branch, so a deployment that applied
+#: it by name applied these bytes. A recorded row without a digest is adopted
+#: only if its file still matches; anything else is refused.
+PRE_CHECKSUM_SHA256 = {
+    "0001_initial.sql": "0daeb5501d6835aacfc5e7939743f18f68ba2a94304204f5be25a5aa1ffd84ae",
+    "0002_tombstone_preserves_provenance.sql":
+        "943fb4aef3b3ecf027589bcfd7075a6aca0e550e7774d95d9bc86cca0a92c797",
+    "0003_memory_lifecycle.sql":
+        "4b43f7591a1491dc359b31dad6bd37799acdfbb160a896c275fdcc662356af87",
+    "0004_invocation_manifest_shape.sql":
+        "686f644ba821a8b96da70e49018d1cd5b9630415fc6430230193f9ed3fb3b099",
+}
+
+
+def migration_sha256(text: str) -> str:
+    """sha256 of a migration's text, with line endings normalised to LF.
+
+    Normalising means a checkout that converts line endings does not read as
+    an edited migration; any change to the SQL itself still does.
+    """
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest()
 
 #: Tracks open Apollo transactions per thread so that `assert_no_open_transaction`
 #: can make "no transaction spans a model call" (spec A.2) a runtime property
@@ -70,25 +94,81 @@ class Database:
             conn.close()
 
     def migrate(self) -> list[str]:
-        """Apply pending numbered migrations. Idempotent and repeatable."""
+        """Apply pending numbered migrations. Idempotent and repeatable.
+
+        Every applied migration is recorded with its digest. Before applying
+        anything, each recorded migration is checked against its file: an
+        applied file that was edited, or that is missing, refuses the whole
+        run, because the database would otherwise silently diverge from the
+        schema the code describes.
+        """
+        files = {
+            path.name: path.read_text(encoding="utf-8")
+            for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
+        }
+        digests = {name: migration_sha256(text) for name, text in files.items()}
         applied: list[str] = []
         with self.connect() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
                     "CREATE TABLE IF NOT EXISTS schema_migration ("
-                    "  name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
+                    "  name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now(),"
+                    "  sha256 text)"
                 )
-                cur.execute("SELECT name FROM schema_migration")
-                done = {row["name"] for row in cur.fetchall()}
-            for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-                if path.name in done:
+                cur.execute("ALTER TABLE schema_migration ADD COLUMN IF NOT EXISTS sha256 text")
+                cur.execute("SELECT name, sha256 FROM schema_migration")
+                recorded = {row["name"]: row["sha256"] for row in cur.fetchall()}
+
+            adopt = _check_recorded(recorded, digests)
+            if adopt:
+                with conn.transaction(), conn.cursor() as cur:
+                    for name, digest in adopt.items():
+                        cur.execute(
+                            "UPDATE schema_migration SET sha256 = %s"
+                            " WHERE name = %s AND sha256 IS NULL",
+                            (digest, name),
+                        )
+                log.info("migration.checksums_recorded", extra={"migrations": sorted(adopt)})
+
+            for name, text in files.items():
+                if name in recorded:
                     continue
                 with conn.transaction(), conn.cursor() as cur:
-                    cur.execute(path.read_text(encoding="utf-8"))
-                    cur.execute("INSERT INTO schema_migration (name) VALUES (%s)", (path.name,))
-                applied.append(path.name)
-                log.info("migration.applied", extra={"migration": path.name})
+                    cur.execute(text)
+                    cur.execute(
+                        "INSERT INTO schema_migration (name, sha256) VALUES (%s, %s)",
+                        (name, digests[name]),
+                    )
+                applied.append(name)
+                log.info("migration.applied", extra={"migration": name})
         return applied
+
+
+def _check_recorded(
+    recorded: dict[str, str | None], digests: dict[str, str]
+) -> dict[str, str]:
+    """Refuse on any drift; return the pre-checksum rows whose digest may be recorded."""
+    adopt: dict[str, str] = {}
+    for name, stored in sorted(recorded.items()):
+        current = digests.get(name)
+        if current is None:
+            raise MigrationChecksumError(
+                f"migration {name} is recorded as applied but its file is missing"
+            )
+        if stored is None:
+            # Applied before digests were recorded: only the known version counts.
+            if PRE_CHECKSUM_SHA256.get(name) != current:
+                raise MigrationChecksumError(
+                    f"migration {name} was applied before checksums were recorded,"
+                    " and its file no longer matches the version that was applied"
+                )
+            adopt[name] = current
+        elif stored != current:
+            raise MigrationChecksumError(
+                f"migration {name} was edited after it was applied"
+                f" (recorded {stored[:12]}, file {current[:12]})"
+            )
+    return adopt
 
 
 #: The runtime role's default name. The owner/migration role is separate and is
