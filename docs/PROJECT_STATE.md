@@ -28,7 +28,12 @@ declares.
   would send the models exactly the bytes the M2 runs sent, so the M2 results stand for `chat-v2`.
   Run records made from now on record `chat-v2`; eval diff validity is decided by bundle hashes.
 - **Replay check: deferred to step 13**, which builds replay. Until then no replay path exists to
-  check. Step 13 must re-render invocations recorded under `chat-v1` with `chat-v1`.
+  check. Step 13 must re-render invocations recorded under `chat-v1` with `chat-v1`. Until it
+  does, two tests hold that contract. `test_render_versions.py` pins the `chat-v1` prompt hashes
+  for failed-turn histories, the only case where the versions differ, to what the renderer
+  produced before `chat-v2`. `test_role_alternation.py` checks that a stored `chat-v1` invocation
+  after a failed turn reproduces its stored prompt hash under its stored `render_version` and not
+  under the default.
 - The concluded retrieval-notice ablation stays frozen to `chat-v1`: its preflight refuses a
   `chat-v2` renderer, which is correct for a sealed experiment.
 
