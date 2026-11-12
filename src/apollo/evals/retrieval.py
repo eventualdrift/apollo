@@ -227,6 +227,9 @@ def _memory(raw: Any, where: str) -> FixtureMemory:
         validate_claim(subject, content)
     except MemoryInputError as exc:
         raise RetrievalFixtureError(f"{here}: {exc}") from None
+    if _text(raw["origin_tier"], here, "origin_tier") != OriginTier.USER_ASSERTED:
+        # The database's phase-zero rule (memory_phase0_origin_tier_ck, migration 0003).
+        raise RetrievalFixtureError(f"{here}: phase zero stores only user_asserted claims")
     try:
         return FixtureMemory(
             ref=raw["ref"], scope=Scope(_text(raw["scope"], here, "scope")),
@@ -260,6 +263,13 @@ def _check_corrections(memories: tuple[FixtureMemory, ...], where: str) -> None:
         if old.status != "superseded":
             raise RetrievalFixtureError(
                 f"{where}: {old.ref} is corrected by {memory.ref}, so its status is `superseded`"
+            )
+        if memory.status == "tombstoned":
+            # A tombstone forgets the whole chain (spec D.9/1): the predecessor
+            # would end tombstoned, not `superseded` as the file says.
+            raise RetrievalFixtureError(
+                f"{where}: {memory.ref} corrects {old.ref}, so it cannot be tombstoned;"
+                " a tombstone forgets the whole chain"
             )
         # The lifecycle carries these forward from the corrected row (spec D.5);
         # a fixture that declares otherwise would not run as written.

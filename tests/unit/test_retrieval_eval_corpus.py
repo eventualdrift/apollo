@@ -284,3 +284,32 @@ def test_a_case_with_no_recorded_failures_is_never_excused() -> None:
         "other": ["new not retrieved"]
     }
     assert unexpected_failures([_result("passing")], {}) == {}
+
+
+def test_a_correction_cannot_be_tombstoned(tmp_path: pathlib.Path) -> None:
+    """A tombstone forgets the whole chain (spec D.9/1), not only the head.
+
+    The predecessor, declared `superseded`, would be tombstoned too, so the
+    database would not hold what the file says.
+    """
+    base = "scope: user, kind: fact, subject: s, origin_tier: user_asserted"
+    path = _write(tmp_path, (
+        "version: 1\nfixture:\n  memories:\n"
+        f"    - {{ref: old, {base}, content: c, status: superseded}}\n"
+        f"    - {{ref: new, {base}, content: d, corrects: old, status: tombstoned}}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="cannot be tombstoned"):
+        load_case_file(path)
+
+
+@pytest.mark.parametrize("tier", ["model_inferred", "connector_imported"])
+def test_only_user_asserted_claims_load_in_phase_zero(tmp_path: pathlib.Path, tier: str) -> None:
+    """The database stores only `user_asserted` today (memory_phase0_origin_tier_ck)."""
+    path = _write(tmp_path, (
+        "version: 1\nfixture:\n  memories:\n"
+        f"    - {{ref: a, scope: user, kind: fact, subject: s, content: c, origin_tier: {tier}}}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="only user_asserted"):
+        load_case_file(path)
