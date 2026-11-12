@@ -182,3 +182,81 @@ def test_finalising_an_invocation_twice_raises_and_changes_nothing(db, service, 
         )
     assert _rows(db, "SELECT * FROM model_invocation WHERE id = %s",
                  (invocation_id,)) == [before]
+
+
+# -- lock order: recovery and completion take the turn row first ----------------
+
+
+def test_completion_waits_for_recovery_instead_of_deadlocking(
+    db, service_factory, clock
+) -> None:
+    """Recovery locks the turn, then appends its note. Completion must lock in that order.
+
+    Recovery's transaction is held open here, past its turn lock, while the
+    late result arrives. If completion inserted its reply before taking the
+    turn lock, it would hold the conversation's next message seq, and
+    recovery's note would wait on it while completion waited on the turn:
+    a deadlock. Completion takes the turn lock first, so recovery's note goes
+    in, recovery commits, and completion finds the turn already finalised.
+    """
+    import threading
+    import time as _time
+
+    import psycopg
+
+    conversation_id = create_conversation(db, now=clock())
+    recovery_holds_the_turn = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def recovery_in_another_process(turn_id) -> None:  # noqa: ANN001
+        with psycopg.connect(db._dsn, autocommit=False) as conn, conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '5s'")
+            cur.execute(
+                "UPDATE turn SET status = 'failed', completed_at = now(),"
+                " error_kind = 'interrupted' WHERE id = %s AND status = 'started'"
+                " RETURNING conversation_id",
+                (turn_id,),
+            )
+            [(conv,)] = cur.fetchall()
+            recovery_holds_the_turn.set()
+            # Wait until the late completion is blocked behind this transaction.
+            deadline = _time.monotonic() + 5
+            while _time.monotonic() < deadline:
+                cur.execute("SELECT count(*) FROM pg_locks WHERE NOT granted")
+                if cur.fetchone()[0]:
+                    break
+                _time.sleep(0.02)
+            else:
+                outcome["recovery"] = "completion never waited for the turn lock"
+                return
+            try:
+                cur.execute(
+                    "INSERT INTO message (id, conversation_id, seq, role, content, created_at,"
+                    " turn_id) SELECT gen_random_uuid(), %s, coalesce(max(seq), 0) + 1,"
+                    " 'system_note', 'interrupted', now(), %s FROM message"
+                    " WHERE conversation_id = %s",
+                    (conv, turn_id, conv),
+                )
+            except psycopg.errors.Error as exc:
+                outcome["recovery"] = type(exc).__name__
+                return
+            conn.commit()
+            outcome["recovery"] = "committed"
+
+    class LateBrain(FakeBrain):
+        def generate(self, req: RenderedRequest, params: GenerationParams):  # type: ignore[no-untyped-def]
+            [turn] = _rows(db, "SELECT id FROM turn WHERE status = 'started'")
+            worker = threading.Thread(target=recovery_in_another_process, args=(turn["id"],))
+            worker.start()
+            outcome["worker"] = worker
+            assert recovery_holds_the_turn.wait(5)
+            return super().generate(req, params)
+
+    result = service_factory(brain=LateBrain(key="fake")).submit(
+        conversation_id=conversation_id, text="A question that takes too long"
+    )
+    outcome["worker"].join(10)  # type: ignore[attr-defined]
+
+    assert outcome["recovery"] == "committed"
+    assert (result.status, result.error_kind) == ("failed", "interrupted")
+    assert [m["role"] for m in transcript(db, conversation_id)] == ["user", "system_note"]

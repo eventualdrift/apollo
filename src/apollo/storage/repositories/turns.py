@@ -40,6 +40,22 @@ class TurnRepository:
         )
         return turn_id
 
+    def lock_started(self, turn_id: uuid.UUID) -> None:
+        """Take the turn's row lock first in a finalisation that writes a message.
+
+        Every transaction that finalises a turn locks the turn row before it
+        appends a message: failure finalisation and orphan recovery update the
+        turn first, and completion calls this before appending its reply. One
+        order means a late completion waits behind recovery rather than holding
+        the conversation's next message seq while recovery holds the turn,
+        which deadlocks. Raises if the turn is no longer `started`.
+        """
+        cur = self._uow.execute(
+            "SELECT 1 FROM turn WHERE id = %s AND status = 'started' FOR UPDATE", (turn_id,)
+        )
+        if cur.fetchone() is None:
+            raise FinalisationConflictError(table="turn", row_id=turn_id)
+
     def complete(
         self,
         *,

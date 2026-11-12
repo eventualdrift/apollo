@@ -336,6 +336,7 @@ class PersonaRunner:
         self, conversation_id: uuid.UUID, turn_id: uuid.UUID, text: str, *, now: datetime
     ) -> None:
         with unit_of_work(self._db) as uow:
+            TurnRepository(uow).lock_started(turn_id)
             message = MessageRepository(uow).append(
                 conversation_id=conversation_id, role="apollo", content=text,
                 now=now, turn_id=turn_id,

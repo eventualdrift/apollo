@@ -463,6 +463,7 @@ class TurnService:
         latency = max(1, int((time.monotonic() - turn_started) * 1000))
         try:
             with unit_of_work(self._db) as uow:
+                TurnRepository(uow).lock_started(turn_id)
                 message = MessageRepository(uow).append(
                     conversation_id=conversation_id,
                     role="apollo",
