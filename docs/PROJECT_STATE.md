@@ -40,8 +40,17 @@ the governing documents; it does not replace the frozen specification or accepte
 
 **The retrieval suite (step 11 PR 3):**
 - `evals/retrieval/cases/`: 25 synthetic cases in four files, covering all nine §E.5 types in both the tuning and the held-out half. They await Janu's review before any tuning.
-- `evals/retrieval/baseline.json`: CI fails if a metric gets worse, or if a case that passes there starts failing.
+- `evals/retrieval/baseline.json`: CI runs the suite under both `english` and `simple` and fails if:
+  - a metric of either configuration gets worse;
+  - a case that passes there starts failing;
+  - a known-failing case fails in a new way.
 - At the provisional defaults (`english`, floor 0.0), 23 of 25 cases pass. `recall@5`, `precision@5` and `correct_empty_rate` are all 1.0 on both halves.
+- `simple` at the same floor passes 11 of 25. Its scores, tuning half then held-out half:
+  - `recall@5`: 0.875 and 0.875;
+  - `precision@5`: 0.56 and 0.41;
+  - `correct_empty_rate`: 0.0 on both.
+
+  It neither stems nor drops stop words, so "my" and "what" match unrelated memories and inflected forms miss. The floor sweep (PR 3b) makes the choice; on these numbers it is `english`.
 - Its first run caught a ranking bug in PR 2, fixed there: lexical scores were not normalised before the merge, so unrelated recent memories outranked every genuine match.
 
 **Two spec questions for Janu, raised by the suite:**
