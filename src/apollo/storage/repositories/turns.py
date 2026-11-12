@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from apollo.errors import FinalisationConflictError
 from apollo.storage.ids import uuid7
 from apollo.storage.unit_of_work import UnitOfWork
 
@@ -47,11 +48,12 @@ class TurnRepository:
         now: datetime,
         latency_ms: int,
     ) -> None:
-        self._uow.execute(
+        cur = self._uow.execute(
             "UPDATE turn SET status = 'completed', response_message_id = %s,"
             "  completed_at = %s, latency_ms = %s WHERE id = %s AND status = 'started'",
             (response_message_id, now, latency_ms, turn_id),
         )
+        _require_one_row(cur.rowcount, turn_id)
 
     def fail(
         self,
@@ -62,11 +64,12 @@ class TurnRepository:
         error_detail: str | None,
         latency_ms: int | None = None,
     ) -> None:
-        self._uow.execute(
+        cur = self._uow.execute(
             "UPDATE turn SET status = 'failed', completed_at = %s, latency_ms = %s,"
             "  error_kind = %s, error_detail = %s WHERE id = %s AND status = 'started'",
             (now, latency_ms, error_kind, error_detail, turn_id),
         )
+        _require_one_row(cur.rowcount, turn_id)
 
     def get(self, turn_id: uuid.UUID) -> dict[str, Any] | None:
         cur = self._uow.execute("SELECT * FROM turn WHERE id = %s", (turn_id,))
@@ -86,3 +89,14 @@ class TurnRepository:
             (now, older_than),
         )
         return len(cur.fetchall())
+
+
+def _require_one_row(rowcount: int, turn_id: uuid.UUID) -> None:
+    """Finalisation moves a `started` turn and nothing else.
+
+    Zero rows means the turn is no longer `started`: orphan recovery got there
+    first. Raising rolls back the caller's whole unit of work, so the response
+    message and audit events written with it go too.
+    """
+    if rowcount != 1:
+        raise FinalisationConflictError(table="turn", row_id=turn_id)

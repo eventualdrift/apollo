@@ -192,6 +192,25 @@ def classify_http_status(
     )
 
 
+class FinalisationConflictError(ApolloError):
+    """A turn or invocation was no longer `started` when its finalisation reached it.
+
+    Orphan recovery (spec A.2) marks a turn and its invocations `interrupted`
+    once they outlive the orphan window, including ones whose model call is
+    still running in another process. When that call returns, its result must
+    not be written over the recorded state: the late finalisation's whole
+    transaction rolls back, so no message and no audit event claim an outcome
+    the rows do not show.
+    """
+
+    kind = ErrorKind.INTERRUPTED
+
+    def __init__(self, *, table: str, row_id: object) -> None:
+        super().__init__(f"{table} {row_id} was no longer started at finalisation")
+        self.table = table
+        self.row_id = row_id
+
+
 class EmptyGenerationError(ApolloError):
     kind = ErrorKind.EMPTY_GENERATION
 

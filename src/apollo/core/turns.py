@@ -41,6 +41,7 @@ from apollo.errors import (
     BrainRejectedError,
     BrainTransportError,
     ErrorKind,
+    FinalisationConflictError,
     PolicyRefusedError,
     TransportReason,
 )
@@ -435,46 +436,49 @@ class TurnService:
     ) -> TurnResult:
         now = self._clock()
         latency = max(1, int((time.monotonic() - turn_started) * 1000))
-        with unit_of_work(self._db) as uow:
-            message = MessageRepository(uow).append(
-                conversation_id=conversation_id,
-                role="apollo",
-                content=text,
-                now=now,
-                turn_id=turn_id,
-                truncated=truncated,
-            )
-            TurnRepository(uow).complete(
-                turn_id=turn_id,
-                response_message_id=message["id"],
-                now=now,
-                latency_ms=latency,
-            )
-            ConversationRepository(uow).touch(conversation_id, now)
-            uow.record(
-                AuditEvent(
-                    event_type=EventType.MESSAGE_CREATED,
-                    actor=Actor.APOLLO_CORE,
-                    subject_kind="message",
-                    subject_id=message["id"],
+        try:
+            with unit_of_work(self._db) as uow:
+                message = MessageRepository(uow).append(
                     conversation_id=conversation_id,
+                    role="apollo",
+                    content=text,
+                    now=now,
                     turn_id=turn_id,
-                    occurred_at=now,
-                    payload={"message_role": "apollo", "seq": message["seq"]},
+                    truncated=truncated,
                 )
-            )
-            uow.record(
-                AuditEvent(
-                    event_type=EventType.TURN_COMPLETED,
-                    actor=Actor.APOLLO_CORE,
-                    subject_kind="turn",
-                    subject_id=turn_id,
-                    conversation_id=conversation_id,
+                TurnRepository(uow).complete(
                     turn_id=turn_id,
-                    occurred_at=now,
-                    payload={"latency_ms": latency, "status": "completed"},
+                    response_message_id=message["id"],
+                    now=now,
+                    latency_ms=latency,
                 )
-            )
+                ConversationRepository(uow).touch(conversation_id, now)
+                uow.record(
+                    AuditEvent(
+                        event_type=EventType.MESSAGE_CREATED,
+                        actor=Actor.APOLLO_CORE,
+                        subject_kind="message",
+                        subject_id=message["id"],
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        occurred_at=now,
+                        payload={"message_role": "apollo", "seq": message["seq"]},
+                    )
+                )
+                uow.record(
+                    AuditEvent(
+                        event_type=EventType.TURN_COMPLETED,
+                        actor=Actor.APOLLO_CORE,
+                        subject_kind="turn",
+                        subject_id=turn_id,
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        occurred_at=now,
+                        payload={"latency_ms": latency, "status": "completed"},
+                    )
+                )
+        except FinalisationConflictError:
+            return self._as_recorded(turn_id, invocation_ids)
         return TurnResult(
             turn_id=turn_id,
             status="completed",
@@ -496,47 +500,50 @@ class TurnService:
         latency = max(1, int((time.monotonic() - turn_started) * 1000))
         kind = error_kind(exc)
         note = system_note_for_error(exc)
-        with unit_of_work(self._db) as uow:
-            TurnRepository(uow).fail(
-                turn_id=turn_id,
-                now=now,
-                error_kind=str(kind),
-                error_detail=error_detail(exc),
-                latency_ms=latency,
-            )
-            if note:
-                # Durable and human-visible; never re-enters model context (spec F.2).
-                system_message = MessageRepository(uow).append(
-                    conversation_id=conversation_id,
-                    role="system_note",
-                    content=note,
-                    now=now,
+        try:
+            with unit_of_work(self._db) as uow:
+                TurnRepository(uow).fail(
                     turn_id=turn_id,
+                    now=now,
+                    error_kind=str(kind),
+                    error_detail=error_detail(exc),
+                    latency_ms=latency,
                 )
+                if note:
+                    # Durable and human-visible; never re-enters model context (spec F.2).
+                    system_message = MessageRepository(uow).append(
+                        conversation_id=conversation_id,
+                        role="system_note",
+                        content=note,
+                        now=now,
+                        turn_id=turn_id,
+                    )
+                    uow.record(
+                        AuditEvent(
+                            event_type=EventType.MESSAGE_CREATED,
+                            actor=Actor.SYSTEM,
+                            subject_kind="message",
+                            subject_id=system_message["id"],
+                            conversation_id=conversation_id,
+                            turn_id=turn_id,
+                            occurred_at=now,
+                            payload={"message_role": "system_note", "seq": system_message["seq"]},
+                        )
+                    )
                 uow.record(
                     AuditEvent(
-                        event_type=EventType.MESSAGE_CREATED,
-                        actor=Actor.SYSTEM,
-                        subject_kind="message",
-                        subject_id=system_message["id"],
+                        event_type=EventType.TURN_FAILED,
+                        actor=Actor.APOLLO_CORE,
+                        subject_kind="turn",
+                        subject_id=turn_id,
                         conversation_id=conversation_id,
                         turn_id=turn_id,
                         occurred_at=now,
-                        payload={"message_role": "system_note", "seq": system_message["seq"]},
+                        payload={"error_kind": str(kind), "latency_ms": latency},
                     )
                 )
-            uow.record(
-                AuditEvent(
-                    event_type=EventType.TURN_FAILED,
-                    actor=Actor.APOLLO_CORE,
-                    subject_kind="turn",
-                    subject_id=turn_id,
-                    conversation_id=conversation_id,
-                    turn_id=turn_id,
-                    occurred_at=now,
-                    payload={"error_kind": str(kind), "latency_ms": latency},
-                )
-            )
+        except FinalisationConflictError:
+            return self._as_recorded(turn_id, invocation_ids)
         return TurnResult(
             turn_id=turn_id,
             status="failed",
@@ -544,6 +551,32 @@ class TurnService:
             response_message_id=None,
             invocation_ids=invocation_ids,
             error_kind=str(kind),
+        )
+
+    def _as_recorded(
+        self, turn_id: uuid.UUID, invocation_ids: tuple[uuid.UUID, ...]
+    ) -> TurnResult:
+        """The turn was finalised before this attempt to: report what is recorded.
+
+        Orphan recovery (spec A.2) can mark a turn interrupted while its model
+        call is still running. The late finalisation rolled back whole, so the
+        transcript gains no reply and no note, and the caller is told what the
+        rows say rather than what the late result would have said.
+        """
+        with unit_of_work(self._db, expect_audit=False) as uow:
+            turn = TurnRepository(uow).get(turn_id)
+        assert turn is not None
+        log.warning(
+            "turn.late_result_discarded",
+            extra={"turn_id": str(turn_id), "status": turn["status"]},
+        )
+        return TurnResult(
+            turn_id=turn_id,
+            status=turn["status"],
+            response=None,
+            response_message_id=turn["response_message_id"],
+            invocation_ids=invocation_ids,
+            error_kind=turn["error_kind"],
         )
 
     def _record_policy_refusal(

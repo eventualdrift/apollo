@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from apollo.errors import FinalisationConflictError
 from apollo.storage.ids import uuid7
 from apollo.storage.unit_of_work import UnitOfWork
 
@@ -86,7 +87,7 @@ class InvocationRepository:
         completion_tokens: int | None,
         reasoning_tokens: int | None,
     ) -> None:
-        self._uow.execute(
+        cur = self._uow.execute(
             "UPDATE model_invocation SET status = 'completed', completed_at = %s, latency_ms = %s,"
             "  model_identifier = %s, rendered_prompt_hash = %s, finish_reason = %s,"
             "  prompt_tokens = %s, completion_tokens = %s, reasoning_tokens = %s"
@@ -103,6 +104,7 @@ class InvocationRepository:
                 invocation_id,
             ),
         )
+        _require_one_row(cur.rowcount, invocation_id)
 
     def fail(
         self,
@@ -113,11 +115,12 @@ class InvocationRepository:
         error_kind: str,
         error_detail: str | None,
     ) -> None:
-        self._uow.execute(
+        cur = self._uow.execute(
             "UPDATE model_invocation SET status = 'failed', completed_at = %s, latency_ms = %s,"
             "  error_kind = %s, error_detail = %s WHERE id = %s AND status = 'started'",
             (now, latency_ms, error_kind, error_detail, invocation_id),
         )
+        _require_one_row(cur.rowcount, invocation_id)
 
     def redact_hashes_including(self, manifest_pattern: list[dict[str, Any]], now: datetime) -> int:
         """Null both verification hashes wherever the manifest contains the pattern.
@@ -164,3 +167,9 @@ class InvocationRepository:
             (now, older_than),
         )
         return len(cur.fetchall())
+
+
+def _require_one_row(rowcount: int, invocation_id: uuid.UUID) -> None:
+    """Finalisation moves a `started` invocation and nothing else (see turns.py)."""
+    if rowcount != 1:
+        raise FinalisationConflictError(table="model_invocation", row_id=invocation_id)
