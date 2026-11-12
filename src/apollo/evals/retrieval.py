@@ -192,8 +192,10 @@ def load_case_file(path: pathlib.Path) -> CaseFile:
     raw = _read_yaml(path)
     where = path.name
     _require_mapping(raw, where, FILE_FIELDS, required=FILE_FIELDS)
-    if raw["version"] != 1:
-        raise RetrievalFixtureError(f"{where}: unsupported version {raw['version']!r}")
+    version = raw["version"]
+    if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+        # `true` and `1.0` compare equal to 1; the file must say 1.
+        raise RetrievalFixtureError(f"{where}: unsupported version {version!r}")
     _require_mapping(raw["fixture"], f"{where}: fixture", {"memories"}, required={"memories"})
     memories = tuple(_memory(m, where) for m in _list(raw["fixture"]["memories"], where))
     refs = [m.ref for m in memories]
@@ -449,6 +451,22 @@ def run_file(
     """Load the file's fixture once, then run every case under each settings value."""
     ids = load_fixture(db, case_file)
     return {s: [run_case(db, case, ids, s) for case in case_file.cases] for s in settings}
+
+
+def unexpected_failures(
+    results: list[CaseResult], known: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Failures the baseline does not record, by case id.
+
+    A known-failing case is excused exactly the failures recorded for it, not
+    the whole case: a second failure in the same case (support that flips, a
+    rank that slips further) is a regression like any other.
+    """
+    unexpected = {
+        r.case.id: sorted(set(r.failures) - set(known.get(r.case.id, ())))
+        for r in results
+    }
+    return {case_id: failures for case_id, failures in unexpected.items() if failures}
 
 
 # -- metrics ---------------------------------------------------------------------------

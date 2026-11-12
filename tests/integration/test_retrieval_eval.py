@@ -2,7 +2,8 @@
 
 Each case file's fixture is loaded into a database of its own. The suite runs
 at the default settings and must not get worse than the recorded baseline:
-no metric drops and no case that passes there starts failing.
+no metric drops, no case that passes there starts failing, and a case that
+fails there fails in no new way.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from apollo.evals.retrieval import (
     load_case_files,
     metrics,
     run_file,
+    unexpected_failures,
 )
 from apollo.memory.retrieval import DEFAULT_SETTINGS
 
@@ -53,6 +55,6 @@ def test_the_retrieval_suite_does_not_regress(database_factory) -> None:
             assert now[metric] >= recorded[metric], (split, metric, now[metric], recorded[metric])
         assert now["mean_rank_of_expected"] <= recorded["mean_rank_of_expected"], split
 
-    failing = {r.case.id: r.failures for r in results if not r.passed}
-    unexpected = {k: v for k, v in failing.items() if k not in baseline["known_failures"]}
+    known = {case_id: entry["failures"] for case_id, entry in baseline["known_failures"].items()}
+    unexpected = unexpected_failures(results, known)
     assert not unexpected, unexpected

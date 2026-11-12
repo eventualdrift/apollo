@@ -9,9 +9,12 @@ import pytest
 from apollo.evals.retrieval import (
     CASE_TYPES,
     SPLITS,
+    CaseResult,
+    RetrievalCase,
     RetrievalFixtureError,
     load_case_file,
     load_case_files,
+    unexpected_failures,
 )
 
 CASES = pathlib.Path(__file__).resolve().parents[2] / "evals" / "retrieval" / "cases"
@@ -240,3 +243,44 @@ def test_a_repeated_mapping_key_is_refused(tmp_path: pathlib.Path, text: str) ->
 def test_unparseable_yaml_is_a_fixture_error(tmp_path: pathlib.Path) -> None:
     with pytest.raises(RetrievalFixtureError, match="not valid YAML"):
         load_case_file(_write(tmp_path, "version: 1\nfixture: [unclosed\n"))
+
+
+@pytest.mark.parametrize("version", ["true", "1.0", "'1'"], ids=["boolean", "float", "string"])
+def test_the_version_must_be_the_whole_number_one(tmp_path: pathlib.Path, version: str) -> None:
+    """`True == 1.0 == 1` in Python; the file must say 1, not something equal to it."""
+    path = _write(tmp_path, (
+        f"version: {version}\nfixture:\n  memories:\n{GOOD_MEMORY}"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="unsupported version"):
+        load_case_file(path)
+
+
+def _result(case_id: str, *failures: str) -> CaseResult:
+    case = RetrievalCase(
+        id=case_id, type="recency", split="tune", description="d", query="q", previous=None,
+        must_retrieve=("new",), may_retrieve=(), must_not_retrieve=(), max_rank=1,
+        substantive_match_expected=True,
+    )
+    return CaseResult(case, merged=("old", "new"), support=("old", "new"),
+                      substantive_support=True, failures=failures)
+
+
+def test_a_known_failing_case_is_excused_only_its_recorded_failures() -> None:
+    """A new failure in a case already failing for another reason still counts."""
+    known = {"rec": ["new at rank 2 > 1"]}
+    assert unexpected_failures([_result("rec", "new at rank 2 > 1")], known) == {}
+    assert unexpected_failures(
+        [_result("rec", "new at rank 2 > 1", "substantive_support False, expected True")], known
+    ) == {"rec": ["substantive_support False, expected True"]}
+    # A known failure that gets worse is a different failure.
+    assert unexpected_failures([_result("rec", "new at rank 3 > 1")], known) == {
+        "rec": ["new at rank 3 > 1"]
+    }
+
+
+def test_a_case_with_no_recorded_failures_is_never_excused() -> None:
+    assert unexpected_failures([_result("other", "new not retrieved")], {}) == {
+        "other": ["new not retrieved"]
+    }
+    assert unexpected_failures([_result("passing")], {}) == {}
