@@ -33,6 +33,33 @@ the governing documents; it does not replace the frozen specification or accepte
 3. the eval: fixtures, runner, metrics and CI, with the `english`/`simple` choice;
 4. `MEMORY` and `RETRIEVAL_NOTICE` wired into reply bundles: a compiler version change, the persona suite on a model.
 
+**The selection rule, made precise (Claude, under Janu's delegation):**
+- Among the floors whose `recall@5` on the tuning half is at least 90% of the best floor's, take the highest `correct_empty_rate`.
+- Break ties by the higher `recall@5`, then the lower floor.
+- Strict "correct_empty first" would pick a floor so high it rejects every match: a perfect empty rate with no recall.
+
+**The retrieval suite (step 11 PR 3):**
+- `evals/retrieval/cases/`: 25 synthetic cases in four files, covering all nine §E.5 types in both the tuning and the held-out half. They await Janu's review before any tuning.
+- `evals/retrieval/baseline.json`: CI runs the suite under both `english` and `simple` and fails if:
+  - a metric of either configuration gets worse;
+  - a case that passes there starts failing;
+  - a known-failing case fails in a new way.
+- At the provisional defaults (`english`, floor 0.0), 23 of 25 cases pass. `recall@5`, `precision@5` and `correct_empty_rate` are all 1.0 on both halves.
+- `simple` at the same floor passes 11 of 25. Its scores, tuning half then held-out half:
+  - `recall@5`: 0.875 and 0.875;
+  - `precision@5`: 0.56 and 0.41;
+  - `correct_empty_rate`: 0.0 on both.
+
+  It neither stems nor drops stop words, so "my" and "what" match unrelated memories and inflected forms miss. The floor sweep (PR 3b) makes the choice; on these numbers it is `english`.
+- Its first run caught a ranking bug in PR 2, fixed there: lexical scores were not normalised before the merge, so unrelated recent memories outranked every genuine match.
+
+**Two spec questions for Janu, raised by the suite:**
+1. **Recency can't break a tie (cases `rec_001`, `rec_002`).** The §E.3 merge keeps each memory's *maximum* weighted score. When two memories match equally ("my gym routine" in September, and since November), recency can't lift the newer one, and ties go to the older `memory_id`.
+   - Options: add recency's weighted score to the lexical one instead of taking the maximum, or break ties newest-first.
+   - These two cases fail until this is decided.
+2. **A pinned memory makes every turn "substantive" (case `pin_002`).** §E.3 counts any pinned result as substantive support. So while any memory is pinned, the "nothing matched" notice is never emitted, even for an unrelated question.
+   - Option: pinned memories are always included, but count as support only when they also match lexically above the floor.
+
 **P2-NEW-1 resolved (step 11 PR 1):**
 - The check that no data block sits in the policy region now searches only the text left after cutting each policy block's own text out. A memory that says what the identity also says (even the one word "Apollo") renders cleanly; before, it failed every render.
 - A new last check requires the policy region to hold its policy blocks and nothing else. A copy of a memory added there, or a fragment overlapping the identity's edge, is still rejected.
