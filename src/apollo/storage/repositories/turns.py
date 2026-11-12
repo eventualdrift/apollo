@@ -81,14 +81,20 @@ class TurnRepository:
         row: dict[str, Any] | None = cur.fetchone()
         return row
 
-    def expire_orphans(self, *, older_than: datetime, now: datetime) -> int:
-        """Turns left `started` beyond the window become `interrupted` (spec A.2)."""
+    def expire_orphans(self, *, older_than: datetime, now: datetime) -> list[dict[str, Any]]:
+        """Turns left `started` beyond the window become `interrupted` (spec A.2).
+
+        Returns each expired turn's id and conversation, oldest first, so the
+        caller can finalise them as any failed turn is: with a `system_note`.
+        """
         cur = self._uow.execute(
             "UPDATE turn SET status = 'failed', completed_at = %s, error_kind = 'interrupted'"
-            " WHERE status = 'started' AND started_at < %s RETURNING id",
+            " WHERE status = 'started' AND started_at < %s"
+            " RETURNING id, conversation_id, started_at",
             (now, older_than),
         )
-        return len(cur.fetchall())
+        rows: list[dict[str, Any]] = cur.fetchall()
+        return sorted(rows, key=lambda row: (row["started_at"], row["id"]))
 
 
 def _require_one_row(rowcount: int, turn_id: uuid.UUID) -> None:

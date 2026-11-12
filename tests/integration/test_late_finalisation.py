@@ -23,9 +23,11 @@ import pytest
 from apollo.brains.base import GenerationParams, RenderedRequest
 from apollo.brains.fake import FakeBrain
 from apollo.core.conversations import create_conversation, transcript
+from apollo.core.turns import SYSTEM_NOTES
 from apollo.errors import (
     BrainServiceError,
     BrainTransportError,
+    ErrorKind,
     FinalisationConflictError,
 )
 from apollo.storage.db import Database
@@ -91,15 +93,19 @@ def _assert_left_as_recovery_recorded(db, conversation_id, result) -> None:  # n
     assert invocation["rendered_prompt_hash"] is None
     assert invocation["model_identifier"] is None
 
-    # Janu's message, and nothing after it: no reply, no second note.
-    assert [m["role"] for m in transcript(db, conversation_id)] == ["user"]
+    # Janu's message and recovery's interrupted note: no reply, no second note.
+    messages = transcript(db, conversation_id)
+    assert [m["role"] for m in messages] == ["user", "system_note"]
+    assert messages[1]["content"] == SYSTEM_NOTES[ErrorKind.INTERRUPTED]
 
     # Nothing in the audit log claims an outcome the rows do not show.
     events = [r["event_type"] for r in _rows(
         db, "SELECT event_type FROM audit_event WHERE turn_id = %s ORDER BY id",
         (result.turn_id,),
     )]
-    assert events == ["message.created", "turn.started", "invocation.started"]
+    # Janu's message, the turn, the call, and recovery's note: nothing else.
+    assert events == ["message.created", "turn.started", "invocation.started",
+                      "message.created"]
 
 
 def test_a_late_completion_does_not_overwrite_orphan_recovery(

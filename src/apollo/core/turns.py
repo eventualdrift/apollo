@@ -207,7 +207,32 @@ class TurnService:
             invocations_failed = InvocationRepository(uow).expire_orphans(
                 older_than=cutoff, now=now
             )
-            turns_failed = TurnRepository(uow).expire_orphans(older_than=cutoff, now=now)
+            expired = TurnRepository(uow).expire_orphans(older_than=cutoff, now=now)
+            turns_failed = len(expired)
+            # An interrupted turn is a failed turn, and failure finalisation is
+            # failed status, system_note and audit together (spec A.2).
+            note = system_note_for(ErrorKind.INTERRUPTED)
+            messages = MessageRepository(uow)
+            for turn in expired:
+                message = messages.append(
+                    conversation_id=turn["conversation_id"],
+                    role="system_note",
+                    content=note,
+                    now=now,
+                    turn_id=turn["id"],
+                )
+                uow.record(
+                    AuditEvent(
+                        event_type=EventType.MESSAGE_CREATED,
+                        actor=Actor.SYSTEM,
+                        subject_kind="message",
+                        subject_id=message["id"],
+                        conversation_id=turn["conversation_id"],
+                        turn_id=turn["id"],
+                        occurred_at=now,
+                        payload={"message_role": "system_note", "seq": message["seq"]},
+                    )
+                )
             if invocations_failed or turns_failed:
                 uow.record(
                     AuditEvent(
