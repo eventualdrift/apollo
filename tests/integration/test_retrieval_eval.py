@@ -12,7 +12,13 @@ import pathlib
 
 import pytest
 
-from apollo.evals.retrieval import SPLITS, load_case_files, metrics, run_file
+from apollo.evals.retrieval import (
+    SPLITS,
+    corpus_digest,
+    load_case_files,
+    metrics,
+    run_file,
+)
 from apollo.memory.retrieval import DEFAULT_SETTINGS
 
 pytestmark = pytest.mark.integration
@@ -28,8 +34,13 @@ def test_the_retrieval_suite_does_not_regress(database_factory) -> None:
         "lexical_floor": DEFAULT_SETTINGS.lexical_floor,
     }, "the baseline was recorded at different settings; regenerate it deliberately"
 
+    case_files = load_case_files(ROOT / "cases")
+    assert corpus_digest(case_files) == baseline["corpus_sha256"], (
+        "the cases changed; regenerate the baseline deliberately, with the reason in the commit"
+    )
+
     results = []
-    for case_file in load_case_files(ROOT / "cases"):
+    for case_file in case_files:
         results += run_file(database_factory(), case_file, (DEFAULT_SETTINGS,))[DEFAULT_SETTINGS]
 
     report = {split: metrics([r for r in results if r.case.split == split]).as_dict()

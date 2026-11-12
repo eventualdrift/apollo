@@ -29,6 +29,9 @@ out of precision and recall.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import pathlib
 import uuid
 from dataclasses import dataclass, field
@@ -217,6 +220,9 @@ def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
             # A blank, `false` or `{}` must not quietly become "expect nothing".
             raise RetrievalFixtureError(f"{here}: {name} must be a list")
         values = tuple(_text(v, here, f"each of {name}") for v in given)
+        if len(set(values)) != len(values):
+            # A repeat would count twice in recall's numerator and denominator.
+            raise RetrievalFixtureError(f"{here}: {name} repeats a ref")
         unknown = sorted(set(values) - refs)
         if unknown:
             raise RetrievalFixtureError(f"{here}: {name} names unknown refs {unknown}")
@@ -276,6 +282,20 @@ def _bool(raw: Any, where: str, name: str) -> bool:
     if not isinstance(raw, bool):
         raise RetrievalFixtureError(f"{where}: {name} must be true or false")
     return raw
+
+
+def corpus_digest(case_files: list[CaseFile]) -> str:
+    """sha256 of the loaded corpus, canonically serialised.
+
+    The CI baseline records it, so any change to a case or a memory (a
+    loosened rank, a dropped expectation, a reworded query) fails until the
+    baseline is regenerated on purpose: the suite cannot quietly get easier.
+    """
+    canonical = json.dumps(
+        [dataclasses.asdict(f) for f in sorted(case_files, key=lambda f: f.name)],
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 # -- loading a fixture into a database ---------------------------------------------------

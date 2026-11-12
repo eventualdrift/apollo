@@ -1,9 +1,27 @@
 {
-  "note": "The retrieval suite at RetrievalSettings() defaults. CI fails if any metric gets worse or a case that passes here starts failing. Regenerate deliberately, with the reason in the commit.",
-  "settings": {"text_search_config": "english", "lexical_floor": 0.0},
+  "note": "The retrieval suite at RetrievalSettings() defaults, over the corpus whose digest is corpus_sha256. CI fails if the corpus changes, if any metric gets worse, or if a case that passes here starts failing. Regenerate deliberately, with the reason in the commit.",
+  "corpus_sha256": "55437bb95cf90b7661e38bb88261fe1e72cc765bf842ee300ca96c9883fab58a",
+  "settings": {
+    "text_search_config": "english",
+    "lexical_floor": 0.0
+  },
   "splits": {
-    "tune":    {"cases": 13, "passed": 12, "recall@5": 1.0, "precision@5": 1.0, "mean_rank_of_expected": 1.6364, "correct_empty_rate": 1.0},
-    "holdout": {"cases": 12, "passed": 11, "recall@5": 1.0, "precision@5": 1.0, "mean_rank_of_expected": 1.3333, "correct_empty_rate": 1.0}
+    "tune": {
+      "cases": 13,
+      "passed": 12,
+      "recall@5": 1.0,
+      "precision@5": 1.0,
+      "mean_rank_of_expected": 1.6364,
+      "correct_empty_rate": 1.0
+    },
+    "holdout": {
+      "cases": 12,
+      "passed": 11,
+      "recall@5": 1.0,
+      "precision@5": 1.0,
+      "mean_rank_of_expected": 1.3333,
+      "correct_empty_rate": 1.0
+    }
   },
   "known_failures": {
     "rec_001": "The spec E.3 merge keeps each memory's maximum score, so recency cannot lift the newer of two equal lexical matches; ties go to the older memory_id. A spec question, put to Janu.",

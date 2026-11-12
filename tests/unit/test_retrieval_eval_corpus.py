@@ -160,3 +160,30 @@ def test_a_ref_both_allowed_and_forbidden_is_refused(tmp_path: pathlib.Path) -> 
     ))
     with pytest.raises(RetrievalFixtureError, match="both allowed and forbidden"):
         load_case_file(path)
+
+
+def test_a_ref_repeated_in_one_expectation_is_refused(tmp_path: pathlib.Path) -> None:
+    """A repeat would count twice in recall's numerator and denominator."""
+    path = _write(tmp_path, (
+        f"version: 1\nfixture:\n  memories:\n{GOOD_MEMORY}cases:\n"
+        "  - {id: x, type: direct_fact, split: tune, description: d, query: q,"
+        " must_retrieve: [a, a]}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="repeats"):
+        load_case_file(path)
+
+
+def test_the_corpus_digest_changes_with_any_case_or_memory(tmp_path: pathlib.Path) -> None:
+    from apollo.evals.retrieval import corpus_digest
+
+    def digest(case: str) -> str:
+        text = f"version: 1\nfixture:\n  memories:\n{GOOD_MEMORY}cases:\n  - {case}\n"
+        path = _write(tmp_path, text)
+        return corpus_digest([load_case_file(path)])
+
+    base = "{id: x, type: direct_fact, split: tune, description: d, query: q, must_retrieve: [a]"
+    original = digest(base + "}")
+    assert digest(base + "}") == original
+    assert digest(base + ", max_rank: 3}") != original
+    assert digest(base.replace("must_retrieve: [a]", "may_retrieve: [a]") + "}") != original
+    assert digest(base.replace("query: q", "query: r") + "}") != original
