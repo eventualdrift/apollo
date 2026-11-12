@@ -61,6 +61,44 @@ def fresh_database(admin_dsn: str):
 
 
 @pytest.fixture()
+def database_factory(admin_dsn: str):
+    """Make more provisioned databases in one test, for suites that need one per fixture.
+
+    Each is created, migrated and provisioned exactly as `fresh_database` is,
+    and all are dropped at teardown. Returns the runtime-role `Database`.
+    """
+    import psycopg
+
+    from apollo.storage.db import Database, provision_runtime_role
+
+    made: list[tuple[str, str]] = []
+
+    def make() -> Database:
+        name = f"apollo_test_{uuid.uuid4().hex[:12]}"
+        role = f"{name}_app"
+        made.append((name, role))
+        with psycopg.connect(admin_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{name}"')
+        owner_dsn = _with_dbname(admin_dsn, name)
+        Database(owner_dsn).migrate()
+        with psycopg.connect(owner_dsn, autocommit=True) as conn:
+            provision_runtime_role(conn, role)
+        return Database(_with_role(_with_dbname(admin_dsn, name), role))
+
+    try:
+        yield make
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            for name, role in made:
+                cur.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s",
+                    (name,),
+                )
+                cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
+                cur.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+
+@pytest.fixture()
 def db(fresh_database):
     """Apollo's own connection: the least-privilege runtime role, as in production."""
     from apollo.storage.db import Database

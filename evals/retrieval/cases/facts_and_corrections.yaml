@@ -1,0 +1,119 @@
+# Facts, a correction (the superseded row must never come back) and an
+# archived memory (never retrieved). Later-listed memories are newer.
+version: 1
+fixture:
+  memories:
+    - {ref: uni, scope: user, kind: fact, subject: education, origin_tier: user_asserted,
+       content: "Janu studies computer science at the University of Pretoria."}
+    - {ref: exam_old, scope: user, kind: event, subject: exams, origin_tier: user_asserted, status: superseded,
+       content: "Janu's networks exam is on 14 November."}
+    - {ref: laptop, scope: user, kind: fact, subject: hardware, origin_tier: user_asserted,
+       content: "Janu's laptop is a ThinkPad T480 running Fedora."}
+    - {ref: homelab, scope: user, kind: project, subject: homelab, origin_tier: user_asserted,
+       content: "Janu's homelab is an HP EliteDesk running Proxmox VE with a single Ubuntu VM."}
+    - {ref: go_old, scope: user, kind: fact, subject: programming, origin_tier: user_asserted, status: archived,
+       content: "Janu was learning Go during 2025."}
+    - {ref: rust, scope: user, kind: fact, subject: programming, origin_tier: user_asserted,
+       content: "Janu is learning Rust and prefers it for side projects."}
+    - {ref: exam_new, scope: user, kind: event, subject: exams, origin_tier: user_asserted, corrects: exam_old,
+       content: "Janu's networks exam moved to 21 November."}
+    - {ref: sister, scope: user, kind: person, subject: family, origin_tier: user_asserted,
+       content: "Janu's sister Mira is a nurse in Cape Town."}
+    - {ref: car, scope: user, kind: fact, subject: transport, origin_tier: user_asserted,
+       content: "Janu drives a 2012 Toyota Corolla."}
+
+cases:
+  - id: fact_001
+    type: direct_fact
+    split: tune
+    description: "A direct factual question, stemming needed (study / studies)."
+    query: "where do I study?"
+    must_retrieve: [uni]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: fact_002
+    type: direct_fact
+    split: holdout
+    description: "A direct factual question about hardware."
+    query: "what laptop do I have?"
+    must_retrieve: [laptop]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: fact_003
+    type: direct_fact
+    split: holdout
+    description: "A person, found by relation rather than name."
+    query: "what does my sister do for work?"
+    must_retrieve: [sister]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: corr_001
+    type: correction
+    split: tune
+    description: "Only the corrected exam date; the superseded row must not be returned."
+    query: "when is my networks exam?"
+    must_retrieve: [exam_new]
+    must_not_retrieve: [exam_old]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: corr_002
+    type: correction
+    split: holdout
+    description: "Asked against the old value; still only the correction."
+    query: "is my exam still on the 14th?"
+    must_retrieve: [exam_new]
+    must_not_retrieve: [exam_old]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: arch_001
+    type: archived_exclusion
+    split: tune
+    description: "The archived Go memory must not come back; the active Rust one may."
+    query: "am I still learning Go?"
+    may_retrieve: [rust]
+    must_not_retrieve: [go_old]
+
+  - id: arch_002
+    type: archived_exclusion
+    split: holdout
+    description: "Only the archived memory answers this; so nothing does."
+    query: "what was I doing with Go in 2025?"
+    must_not_retrieve: [go_old]
+    substantive_match_expected: false
+
+  - id: multi_001
+    type: multiple_relevant
+    split: tune
+    description: "Two machines named in one question."
+    query: "tell me about my Proxmox homelab and my ThinkPad"
+    must_retrieve: [homelab, laptop]
+    max_rank: 2
+    substantive_match_expected: true
+
+  - id: multi_002
+    type: multiple_relevant
+    split: holdout
+    description: "Two machines found by the operating systems they run."
+    query: "what do I run Fedora and Ubuntu on?"
+    must_retrieve: [laptop, homelab]
+    max_rank: 2
+    substantive_match_expected: true
+
+  - id: noresult_001
+    type: no_result
+    split: tune
+    description: "Nothing recorded covers this; the system must say so."
+    query: "what's my blood type?"
+    substantive_match_expected: false
+
+  - id: noresult_002
+    type: no_result
+    split: holdout
+    description: "Nothing recorded covers this either."
+    query: "when is my dentist appointment?"
+    substantive_match_expected: false

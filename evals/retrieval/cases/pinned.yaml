@@ -1,0 +1,28 @@
+# A pinned memory: always included, and (spec E.3 as written) always counted
+# as substantive support, even for an unrelated question.
+version: 1
+fixture:
+  memories:
+    - {ref: pronunciation, scope: user, kind: fact, subject: name, origin_tier: user_asserted, pinned: true,
+       content: "Janu's name is pronounced YAH-noo."}
+    - {ref: hours, scope: user, kind: preference, subject: schedule, origin_tier: user_asserted,
+       content: "Janu works on Apollo in the evenings, not during the day."}
+
+cases:
+  - id: pin_001
+    type: direct_fact
+    split: tune
+    description: "A pinned fact, asked about directly."
+    query: "how is my name pronounced?"
+    must_retrieve: [pronunciation]
+    max_rank: 1
+    substantive_match_expected: true
+
+  - id: pin_002
+    type: direct_fact
+    split: holdout
+    description: "An unrelated question still gets the pinned memory, first."
+    query: "what's the capital of Peru?"
+    must_retrieve: [pronunciation]
+    max_rank: 1
+    substantive_match_expected: true
