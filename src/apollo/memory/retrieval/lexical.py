@@ -31,8 +31,20 @@ _WORD = re.compile(r"\w+")
 
 
 def query_text(query: RetrievalQuery) -> str:
-    """The text searched: the previous user message, then the current one."""
+    """The text searched, as recorded: the previous user message, then the current one."""
     return "\n".join(t for t in (query.previous, query.current) if t and t.strip())
+
+
+def query_terms(query: RetrievalQuery, max_terms: int) -> str:
+    """The words searched for: the current question's first, then the previous message's.
+
+    The cap bounds the query's size; spending it on the current question first
+    means a long previous message can add context but never crowd out what is
+    being asked now.
+    """
+    return any_word_query(
+        "\n".join(t for t in (query.current, query.previous) if t), max_terms
+    )
 
 
 def any_word_query(text: str, max_terms: int) -> str:
@@ -55,7 +67,7 @@ class LexicalStrategy:
     ) -> StrategyResult:
         started = time.monotonic()
         text = query_text(query)
-        terms = any_word_query(text, settings.max_query_terms)
+        terms = query_terms(query, settings.max_query_terms)
         rows = (
             repo.lexical(
                 str(query.origin), terms,

@@ -80,3 +80,26 @@ def test_the_any_word_query_is_plain_words_joined_by_or() -> None:
     assert any_word_query("tea tea Tea", 64) == "tea"
     assert any_word_query("!!! ???", 64) == ""
     assert any_word_query("a b c d e", 3) == "a or b or c"
+
+
+def test_a_retrieval_error_is_classified_as_retrieval_failed() -> None:
+    from apollo.errors import ErrorKind
+    from apollo.memory.retrieval import RetrievalError, origin_for_mode
+    from apollo.sanitise import error_kind
+
+    try:
+        origin_for_mode("unknown")
+    except RetrievalError as exc:
+        assert exc.kind is ErrorKind.RETRIEVAL_FAILED
+        assert error_kind(exc) is ErrorKind.RETRIEVAL_FAILED
+    else:
+        raise AssertionError("an unknown mode must be refused")
+
+
+def test_the_current_question_is_searched_first() -> None:
+    from apollo.memory.models import Origin
+    from apollo.memory.retrieval import RetrievalQuery
+    from apollo.memory.retrieval.lexical import query_terms
+
+    query = RetrievalQuery(current="bicycle colour", previous="a b c d", origin=Origin.PERSONAL)
+    assert query_terms(query, 3) == "bicycle or colour or a"

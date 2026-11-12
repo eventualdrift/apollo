@@ -225,3 +225,11 @@ def test_every_strategy_is_recorded_including_empty_ones(db: Database, service, 
     assert rows[RECENCY]["result_count"] == 1 and not rows[RECENCY]["substantive"]
     assert {(r["strategy"], r["memory_id"], r["rank"], r["included_in_context"])
             for r in results} == {(LEXICAL, found, 1, True), (RECENCY, found, 1, True)}
+
+
+def test_a_long_previous_message_cannot_crowd_out_the_current_question(db: Database) -> None:
+    """The word budget is spent on the current question first, then the previous message."""
+    target = _remember(db, "Janu's bicycle is a blue Trek mountain bike")
+    long_previous = " ".join(f"filler{i}" for i in range(100))
+    outcome = _retrieve(db, "what colour is my bicycle?", previous=long_previous)
+    assert target in _ids(outcome, LEXICAL)

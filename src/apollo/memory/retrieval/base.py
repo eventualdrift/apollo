@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from apollo.errors import ApolloError
+from apollo.errors import ApolloError, ErrorKind
 from apollo.memory.models import Origin
 from apollo.storage.repositories import RetrievalRepository
 
@@ -23,6 +23,8 @@ STRATEGIES = (PINNED, LEXICAL, RECENCY)
 
 class RetrievalError(ApolloError):
     """Retrieval could not run. The turn fails as `retrieval_failed`, never silently."""
+
+    kind = ErrorKind.RETRIEVAL_FAILED
 
 
 @dataclass(frozen=True)
