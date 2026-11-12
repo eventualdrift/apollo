@@ -35,6 +35,7 @@ from apollo.context.bundle import ContextBundle
 from apollo.errors import (
     EmptyGenerationError,
     ErrorKind,
+    FinalisationConflictError,
     GenerationContractError,
     InvocationContractError,
 )
@@ -165,74 +166,84 @@ def invoke(
     latency_ms = max(1, int((time.monotonic() - started) * 1000))
     now = now_factory()
 
-    with unit_of_work(db) as uow:
-        repo = InvocationRepository(uow)
-        if generation is not None and error is None:
-            repo.complete(
-                invocation_id=invocation_id,
-                now=now,
-                latency_ms=latency_ms,
-                model_identifier=generation.model_identifier,
-                rendered_prompt_hash=generation.rendered_prompt_hash,
-                finish_reason=generation.finish_reason,
-                prompt_tokens=generation.prompt_tokens,
-                completion_tokens=generation.completion_tokens,
-                reasoning_tokens=generation.reasoning_tokens,
-            )
-            uow.record(
-                AuditEvent(
-                    event_type=EventType.INVOCATION_COMPLETED,
-                    actor=Actor.MODEL,
-                    subject_kind="model_invocation",
-                    subject_id=invocation_id,
-                    conversation_id=conversation_id,
-                    turn_id=turn_id,
-                    occurred_at=now,
-                    payload={
-                        "latency_ms": latency_ms,
-                        "finish_reason": generation.finish_reason,
-                        "prompt_tokens": generation.prompt_tokens,
-                        "completion_tokens": generation.completion_tokens,
-                        "reasoning_tokens": generation.reasoning_tokens,
-                        **{k: v for k, v in meta.items() if k == "provider_request_id"},
-                    },
+    try:
+        with unit_of_work(db) as uow:
+            repo = InvocationRepository(uow)
+            if generation is not None and error is None:
+                repo.complete(
+                    invocation_id=invocation_id,
+                    now=now,
+                    latency_ms=latency_ms,
+                    model_identifier=generation.model_identifier,
+                    rendered_prompt_hash=generation.rendered_prompt_hash,
+                    finish_reason=generation.finish_reason,
+                    prompt_tokens=generation.prompt_tokens,
+                    completion_tokens=generation.completion_tokens,
+                    reasoning_tokens=generation.reasoning_tokens,
                 )
-            )
-        else:
-            assert error is not None
-            kind = error_kind(error)
-            repo.fail(
-                invocation_id=invocation_id,
-                now=now,
-                latency_ms=latency_ms,
-                error_kind=str(kind),
-                error_detail=error_detail(error),
-            )
-            uow.record(
-                AuditEvent(
-                    event_type=EventType.INVOCATION_FAILED,
-                    actor=Actor.APOLLO_CORE,
-                    subject_kind="model_invocation",
-                    subject_id=invocation_id,
-                    conversation_id=conversation_id,
-                    turn_id=turn_id,
-                    occurred_at=now,
-                    payload={"latency_ms": latency_ms, "error_kind": str(kind)},
-                )
-            )
-            if kind is ErrorKind.BRAIN_UNAVAILABLE:
                 uow.record(
                     AuditEvent(
-                        event_type=EventType.BRAIN_UNAVAILABLE,
-                        actor=Actor.SYSTEM,
+                        event_type=EventType.INVOCATION_COMPLETED,
+                        actor=Actor.MODEL,
                         subject_kind="model_invocation",
                         subject_id=invocation_id,
                         conversation_id=conversation_id,
                         turn_id=turn_id,
                         occurred_at=now,
-                        payload={"error_kind": str(kind)},
+                        payload={
+                            "latency_ms": latency_ms,
+                            "finish_reason": generation.finish_reason,
+                            "prompt_tokens": generation.prompt_tokens,
+                            "completion_tokens": generation.completion_tokens,
+                            "reasoning_tokens": generation.reasoning_tokens,
+                            **{k: v for k, v in meta.items() if k == "provider_request_id"},
+                        },
                     )
                 )
+            else:
+                assert error is not None
+                kind = error_kind(error)
+                repo.fail(
+                    invocation_id=invocation_id,
+                    now=now,
+                    latency_ms=latency_ms,
+                    error_kind=str(kind),
+                    error_detail=error_detail(error),
+                )
+                uow.record(
+                    AuditEvent(
+                        event_type=EventType.INVOCATION_FAILED,
+                        actor=Actor.APOLLO_CORE,
+                        subject_kind="model_invocation",
+                        subject_id=invocation_id,
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        occurred_at=now,
+                        payload={"latency_ms": latency_ms, "error_kind": str(kind)},
+                    )
+                )
+                if kind is ErrorKind.BRAIN_UNAVAILABLE:
+                    uow.record(
+                        AuditEvent(
+                            event_type=EventType.BRAIN_UNAVAILABLE,
+                            actor=Actor.SYSTEM,
+                            subject_kind="model_invocation",
+                            subject_id=invocation_id,
+                            conversation_id=conversation_id,
+                            turn_id=turn_id,
+                            occurred_at=now,
+                            payload={"error_kind": str(kind)},
+                        )
+                    )
+    except FinalisationConflictError as conflict:
+        # Orphan recovery marked this invocation interrupted while the call was
+        # running. The transaction above rolled back whole: the row keeps what
+        # recovery recorded, and no audit event claims an outcome it lacks.
+        log.warning(
+            "invocation.late_result_discarded",
+            extra={"invocation_id": str(invocation_id), "turn_id": str(turn_id)},
+        )
+        return InvocationOutcome(invocation_id=invocation_id, generation=None, error=conflict)
 
     log.info(
         "invocation.finished",
