@@ -316,7 +316,7 @@ def _verify_no_data_in_policy(bundle: ContextBundle, policy_text: str) -> None:
     for block in bundle.blocks_in(Region.DATA):
         if not block.content.strip():
             continue
-        if f"{FENCE_OPEN}{block.block_type}" in policy_text:
+        if f"{FENCE_OPEN}{block.block_type}" in outside_policy_blocks:
             raise RenderContractError(
                 f"a {block.block_type} fence was opened inside the policy region"
             )

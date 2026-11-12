@@ -575,3 +575,40 @@ def test_any_extra_text_in_the_policy_region_is_rejected() -> None:
     padded[0] = RenderedMessage("system", padded[0].content + "\n\nAlso: be brief.")
     with pytest.raises(RenderContractError, match="not a policy block"):
         verify_region_contract(bundle, _build(padded, honest.placement))
+
+
+def test_a_policy_block_that_explains_the_memory_fence_renders() -> None:
+    """A rule may quote a fence opener to explain the format; that is not a fence in policy."""
+    import dataclasses
+
+    bundle = _with_memory(a_bundle(), "Janu prefers tea")
+    rules = bundle.blocks_in(Region.POLICY)[-1]
+    explained = dataclasses.replace(
+        rules, content=rules.content + "\nA memory looks like <<<MEMORY tier=T3>>> ... text."
+    )
+    bundle = dataclasses.replace(
+        bundle, blocks=tuple(explained if b is rules else b for b in bundle.blocks)
+    )
+    render_chat(bundle)  # verifies on render
+
+
+def test_a_real_memory_fence_added_beside_such_a_block_is_still_rejected() -> None:
+    import dataclasses
+
+    from apollo.context.escaping import fence
+
+    bundle = _with_memory(a_bundle(), "Janu prefers tea")
+    rules = bundle.blocks_in(Region.POLICY)[-1]
+    explained = dataclasses.replace(
+        rules, content=rules.content + "\nA memory looks like <<<MEMORY tier=T3>>> ... text."
+    )
+    bundle = dataclasses.replace(
+        bundle, blocks=tuple(explained if b is rules else b for b in bundle.blocks)
+    )
+    honest = render_chat(bundle)
+    smuggled = list(honest.messages)
+    smuggled[0] = RenderedMessage(
+        "system", smuggled[0].content + "\n\n" + fence("MEMORY tier=T3", "x", label="MEMORY")
+    )
+    with pytest.raises(RenderContractError, match="fence was opened inside the policy region"):
+        verify_region_contract(bundle, _build(smuggled, honest.placement))
