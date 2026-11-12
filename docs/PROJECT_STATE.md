@@ -10,6 +10,33 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-12): step 11 (retrieval and its eval) begins — Janu's decisions
+
+**Janu's decisions for step 11 (2026-11-12):**
+- **Lexical matching is any-word, not every-word.** A natural question must find a memory that
+  shares its key words. Claude sets the balance; a score floor keeps weak matches out.
+- **The floor, and `english` vs `simple` (§E.4), are chosen by the retrieval eval.**
+  - The cases are split into a tuning half and a held-out half.
+  - The rule is the highest `correct_empty_rate` first, then the highest `recall@5`.
+  - The values are judged on the held-out half, and recorded here.
+- **Claude drafts the fixture cases** (all nine §E.5 types, synthetic content), and **Janu reviews
+  them** before any tuning.
+- **Model runs are allowed**: the persona suite for the compiler change, and the gate's
+  fabricated-memory case. They ship as numbered pre-release versions (v0.1, …) until a v1.0 is ready
+  to leave containment.
+- **Findings 1 and 7 of the old repo review** were not recorded anywhere this session can reach. They
+  are covered by Claude's own review of the retrieval and compiler code during this step.
+
+**Plan:**
+1. the region-verifier fix below;
+2. strategies, scoping, merge, the substantive rule and per-turn recording;
+3. the eval: fixtures, runner, metrics and CI, with the `english`/`simple` choice;
+4. `MEMORY` and `RETRIEVAL_NOTICE` wired into reply bundles: a compiler version change, the persona suite on a model.
+
+**P2-NEW-1 resolved (step 11 PR 1):**
+- The check that no data block sits in the policy region now searches only the text left after cutting each policy block's own text out. A memory that says what the identity also says (even the one word "Apollo") renders cleanly; before, it failed every render.
+- A new last check requires the policy region to hold its policy blocks and nothing else. A copy of a memory added there, or a fragment overlapping the identity's edge, is still rejected.
+
 ## Update (2026-11-12): review fixes done, CI, migration checksums — next is step 11
 
 The updates below are unchanged. **Working rule since 2026-11-12 (Janu):** Claude pushes and

@@ -288,6 +288,7 @@ def verify_region_contract(bundle: ContextBundle, request: RenderedRequest) -> N
     _verify_data_is_fenced_and_escaped(bundle, non_policy)
     _verify_history_roles(bundle, non_policy)
     _verify_request(bundle, request, policy_indexes)
+    _verify_policy_holds_only_policy(bundle, policy_text)
 
 
 def _verify_policy_blocks_present(bundle: ContextBundle, policy_text: str) -> None:
@@ -302,13 +303,16 @@ def _verify_policy_blocks_present(bundle: ContextBundle, policy_text: str) -> No
 def _verify_no_data_in_policy(bundle: ContextBundle, policy_text: str) -> None:
     """No data block may appear in the policy region, in any form.
 
-    Known limitation, deferred deliberately: this is a substring test, so a very
-    short future MEMORY block whose content also occurs inside the identity text
-    — a claim that is literally "Apollo", say — would false-positive. M1 renders
-    no MEMORY blocks in normal operation, and the right fix depends on what real
-    memory rendering looks like, so it is revisited at step 11 rather than
-    guessed at now. See docs/architecture/implementation-plan.md, step 11.
+    The search runs over what the policy region holds *besides* the policy
+    blocks themselves: each policy block's own text is cut out first. A memory
+    may legitimately say something the identity also says (a claim that is
+    just "Apollo", or a sentence the identity happens to contain), and that is
+    not data in the policy region. A copy an adapter put there is: it is not
+    part of any policy block, so cutting those out leaves it in plain sight.
+    That a policy block itself rendered intact is `_verify_policy_blocks_present`'s
+    job. (Resolves P2-NEW-1 from the M1 review, before memories are rendered.)
     """
+    outside_policy_blocks = _excise_policy_blocks(bundle, policy_text)
     for block in bundle.blocks_in(Region.DATA):
         if not block.content.strip():
             continue
@@ -317,10 +321,37 @@ def _verify_no_data_in_policy(bundle: ContextBundle, policy_text: str) -> None:
                 f"a {block.block_type} fence was opened inside the policy region"
             )
         for form, how in ((block.content, "verbatim"), (escape(block.content), "escaped")):
-            if form.strip() and form in policy_text:
+            if form.strip() and form in outside_policy_blocks:
                 raise RenderContractError(
                     f"data block {block.block_type} appears {how} in the policy region"
                 )
+
+
+def _verify_policy_holds_only_policy(bundle: ContextBundle, policy_text: str) -> None:
+    """The policy region holds its policy blocks and nothing else.
+
+    Runs last, so a more specific violation (data, history or the request in
+    the policy region) is reported as itself. This catches what those cannot:
+    a copy of a data block overlapping a policy block's edge, a fragment of
+    one, or anything else an adapter added to the highest-authority position.
+    """
+    if _excise_policy_blocks(bundle, policy_text).replace("\x00", "").strip():
+        raise RenderContractError("the policy region holds text that is not a policy block")
+
+
+def _excise_policy_blocks(bundle: ContextBundle, policy_text: str) -> str:
+    """The policy region with one occurrence of each policy block's text cut out.
+
+    Cut points are joined with a NUL, which no block or message contains, so
+    text either side of a cut cannot join up into a match that was never
+    rendered.
+    """
+    remainder = policy_text
+    for block in bundle.blocks_in(Region.POLICY):
+        text = block.content.strip()
+        if text:
+            remainder = remainder.replace(text, "\x00", 1)
+    return remainder
 
 
 def _verify_data_is_fenced_and_escaped(
