@@ -151,7 +151,7 @@ def load_case_file(path: pathlib.Path) -> CaseFile:
 def _memory(raw: Any, where: str) -> FixtureMemory:
     _require_mapping(raw, where, MEMORY_FIELDS,
                      required={"ref", "scope", "kind", "subject", "content", "origin_tier"})
-    here = f"{where}: memory {raw['ref']}"
+    here = f"{where}: memory {_text(raw['ref'], where, 'ref')}"
     status = raw.get("status", "active")
     if status not in FIXTURE_STATUSES:
         raise RetrievalFixtureError(f"{here}: unknown status {status!r}")
@@ -163,11 +163,14 @@ def _memory(raw: Any, where: str) -> FixtureMemory:
         )
     try:
         return FixtureMemory(
-            ref=str(raw["ref"]), scope=Scope(raw["scope"]), kind=Kind(raw["kind"]),
-            subject=str(raw["subject"]), content=str(raw["content"]),
-            origin_tier=OriginTier(raw["origin_tier"]), status=status,
+            ref=raw["ref"], scope=Scope(_text(raw["scope"], here, "scope")),
+            kind=Kind(_text(raw["kind"], here, "kind")),
+            subject=_text(raw["subject"], here, "subject"),
+            content=_text(raw["content"], here, "content"),
+            origin_tier=OriginTier(_text(raw["origin_tier"], here, "origin_tier")),
+            status=status,
             pinned=_bool(raw.get("pinned", False), here, "pinned"),
-            corrects=raw.get("corrects"),
+            corrects=_optional_text(raw.get("corrects"), here, "corrects"),
         )
     except ValueError as exc:
         raise RetrievalFixtureError(f"{here}: {exc}") from None
@@ -187,6 +190,13 @@ def _check_corrections(memories: tuple[FixtureMemory, ...], where: str) -> None:
             raise RetrievalFixtureError(
                 f"{where}: {old.ref} is corrected by {memory.ref}, so its status is `superseded`"
             )
+        # The lifecycle carries these forward from the corrected row (spec D.5);
+        # a fixture that declares otherwise would not run as written.
+        for name in ("scope", "kind", "subject", "origin_tier", "pinned"):
+            if getattr(memory, name) != getattr(old, name):
+                raise RetrievalFixtureError(
+                    f"{where}: {memory.ref} corrects {old.ref}, so it must keep its {name}"
+                )
     for memory in memories:
         if memory.status == "superseded" and not any(m.corrects == memory.ref for m in memories):
             raise RetrievalFixtureError(f"{where}: {memory.ref} is superseded by nothing")
@@ -195,14 +205,14 @@ def _check_corrections(memories: tuple[FixtureMemory, ...], where: str) -> None:
 def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
     _require_mapping(raw, where, CASE_FIELDS,
                      required={"id", "type", "split", "description", "query"})
-    here = f"{where}: case {raw['id']}"
+    here = f"{where}: case {_text(raw['id'], where, 'id')}"
     if raw["type"] not in CASE_TYPES:
         raise RetrievalFixtureError(f"{here}: unknown type {raw['type']!r}")
     if raw["split"] not in SPLITS:
         raise RetrievalFixtureError(f"{here}: split must be one of {SPLITS}")
     lists = {}
     for name in ("must_retrieve", "may_retrieve", "must_not_retrieve"):
-        values = tuple(str(v) for v in raw.get(name, []) or [])
+        values = tuple(_text(v, here, f"each of {name}") for v in raw.get(name, []) or [])
         unknown = sorted(set(values) - refs)
         if unknown:
             raise RetrievalFixtureError(f"{here}: {name} names unknown refs {unknown}")
@@ -215,11 +225,15 @@ def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
         expected = _bool(expected, here, "substantive_match_expected")
     if lists["must_retrieve"] and expected is False:
         raise RetrievalFixtureError(f"{here}: must_retrieve with no substantive match expected")
+    max_rank = raw.get("max_rank", TOP)
+    if not isinstance(max_rank, int) or isinstance(max_rank, bool) or max_rank < 1:
+        raise RetrievalFixtureError(f"{here}: max_rank must be a positive whole number")
     return RetrievalCase(
-        id=str(raw["id"]), type=raw["type"], split=raw["split"],
-        description=str(raw["description"]), query=str(raw["query"]),
-        previous=raw.get("previous"), max_rank=int(raw.get("max_rank", TOP)),
-        substantive_match_expected=expected, **lists,
+        id=raw["id"], type=raw["type"], split=raw["split"],
+        description=_text(raw["description"], here, "description"),
+        query=_text(raw["query"], here, "query"),
+        previous=_optional_text(raw.get("previous"), here, "previous"),
+        max_rank=max_rank, substantive_match_expected=expected, **lists,
     )
 
 
@@ -238,6 +252,17 @@ def _list(raw: Any, where: str) -> list[Any]:
     if not isinstance(raw, list) or not raw:
         raise RetrievalFixtureError(f"{where}: expected a non-empty list")
     return raw
+
+
+def _text(raw: Any, where: str, name: str) -> str:
+    """A field the corpus measures with must be text as written, never coerced."""
+    if not isinstance(raw, str):
+        raise RetrievalFixtureError(f"{where}: {name} must be text, not {type(raw).__name__}")
+    return raw
+
+
+def _optional_text(raw: Any, where: str, name: str) -> str | None:
+    return None if raw is None else _text(raw, where, name)
 
 
 def _bool(raw: Any, where: str, name: str) -> bool:

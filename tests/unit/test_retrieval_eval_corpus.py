@@ -70,3 +70,59 @@ def test_a_superseded_memory_needs_its_correction(tmp_path: pathlib.Path) -> Non
     ))
     with pytest.raises(RetrievalFixtureError, match="superseded by nothing"):
         load_case_file(path)
+
+
+@pytest.mark.parametrize(("memory", "error"), [
+    ("{ref: a, scope: user, kind: fact, subject: s, content: 123, origin_tier: user_asserted}",
+     "content must be text"),
+    ("{ref: a, scope: user, kind: fact, subject: {name: v}, content: c,"
+     " origin_tier: user_asserted}", "subject must be text"),
+    ("{ref: true, scope: user, kind: fact, subject: s, content: c, origin_tier: user_asserted}",
+     "ref must be text"),
+], ids=["number-content", "mapping-subject", "boolean-ref"])
+def test_a_non_text_memory_field_is_refused(
+    tmp_path: pathlib.Path, memory: str, error: str
+) -> None:
+    path = _write(tmp_path, (
+        f"version: 1\nfixture:\n  memories:\n    - {memory}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match=error):
+        load_case_file(path)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("id", "7"), ("description", "[a, b]"), ("query", "42"), ("previous", "{x: 1}"),
+])
+def test_a_non_text_case_field_is_refused(tmp_path: pathlib.Path, field: str, value: str) -> None:
+    case = {"id": "x", "type": "no_result", "split": "tune", "description": "d", "query": "q"}
+    case[field] = value
+    rendered = ", ".join(f"{k}: {v}" for k, v in case.items())
+    path = _write(
+        tmp_path, f"version: 1\nfixture:\n  memories:\n{GOOD_MEMORY}cases:\n  - {{{rendered}}}\n"
+    )
+    with pytest.raises(RetrievalFixtureError, match=f"{field} must be text"):
+        load_case_file(path)
+
+
+@pytest.mark.parametrize("change", [
+    "scope: world", "kind: event", "subject: other", "pinned: true",
+], ids=["scope", "kind", "subject", "pinned"])
+def test_a_correction_must_keep_its_predecessors_metadata(tmp_path: pathlib.Path,
+                                                          change: str) -> None:
+    """The lifecycle carries these forward; a fixture saying otherwise would not run as written."""
+    base = "scope: user, kind: fact, subject: s, origin_tier: user_asserted"
+    new = ", ".join(
+        change if part.split(":")[0] == change.split(":")[0] else part
+        for part in base.split(", ")
+    )
+    if change.startswith("pinned"):
+        new += ", pinned: true"
+    path = _write(tmp_path, (
+        "version: 1\nfixture:\n  memories:\n"
+        f"    - {{ref: old, {base}, content: c, status: superseded}}\n"
+        f"    - {{ref: new, {new}, content: d, corrects: old}}\n"
+        "cases:\n  - {id: x, type: no_result, split: tune, description: d, query: q}\n"
+    ))
+    with pytest.raises(RetrievalFixtureError, match="must keep"):
+        load_case_file(path)
