@@ -1009,7 +1009,8 @@ these as `spec E.6/<n>`.
    ascending", which put the older of two equally matching memories first: asked about a routine
    that had changed, Apollo led with the old one. The order is now score, descending; then derived
    confidence, higher first (§D.8); then `created_at`, newer first; then `memory_id` ascending for
-   what is still tied.
+   what is still tied. Pinned memories still precede everything else, and take this same order
+   among themselves: those the search matched first, by their match score.
 2. **A pinned memory is support only when it also matches.** §E.3 counted any pinned result as
    substantive support, so while anything was pinned, no question was ever told that nothing
    matched. Now:

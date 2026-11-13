@@ -106,6 +106,41 @@ def test_pinned_lead_and_truncation_is_to_k_overall() -> None:
     assert merged[0].pinned and not merged[1].pinned
 
 
+def test_pinned_memories_are_ordered_among_themselves_by_the_same_rule() -> None:
+    """Spec E.6/1 holds inside the pinned group too (Codex, PR #31).
+
+    Pinned memories were listed by id, oldest first, whatever the search
+    found. Two pinned claims that matched equally still led with the older.
+    """
+    def pinned(n: int, day: int, **counts: int) -> Hit:
+        return Hit(_id(n), 1.0, "s", f"memory {n}", _provenance(day=day, **counts))
+
+    def matched(n: int, score: float, day: int, **counts: int) -> Hit:
+        return Hit(_id(n), score, "s", f"memory {n}", _provenance(day=day, **counts))
+
+    merged = merge((
+        StrategyResult(PINNED, None, (
+            pinned(1, day=2), pinned(2, day=20), pinned(3, day=9), pinned(4, day=5),
+            pinned(5, day=6, confirms=2),
+        ), False, 0),
+        StrategyResult(LEXICAL, "q", (
+            matched(1, 0.5, day=2), matched(2, 0.5, day=20),   # equal matches, both pinned
+            matched(4, 0.9, day=5),                            # the best match, also pinned
+            matched(8, 0.9, day=1),                            # as good, and not pinned
+        ), True, 0),
+        StrategyResult(RECENCY, None, (pinned(3, day=9),), False, 0),
+    ), RetrievalSettings())
+    assert [m.memory_id for m in merged] == [
+        _id(4),   # pinned, best match
+        _id(2),   # pinned, equal match with 1, and newer
+        _id(1),
+        _id(5),   # pinned, unmatched: better attested
+        _id(3),   # pinned, unmatched; being recent is not a match and does not lift it
+        _id(8),   # an unpinned memory never precedes a pinned one, however well it matches
+    ]
+    assert all(m.pinned for m in merged[:5]) and not merged[5].pinned
+
+
 def test_a_pinned_memory_also_found_lexically_appears_once() -> None:
     merged = merge((_result(PINNED, (1, 1.0)), _result(LEXICAL, (1, 0.9))), RetrievalSettings())
     assert [m.memory_id for m in merged] == [_id(1)]

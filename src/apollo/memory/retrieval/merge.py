@@ -1,6 +1,8 @@
 """Merge and the substantive-match rule (spec E.3, as clarified by E.6).
 
 - `pinned` bypasses ranking and is always included, ahead of everything else.
+  Among themselves, pinned memories take the same order as the rest: the ones
+  the search matched first, by score, and then the same tiebreakers.
 - Every other strategy's scores are normalised to [0, 1] by dividing by that
   strategy's best score on this query, so its best result is 1.0. (Lexical
   scores are small absolute values, around 0.03 to 0.1 for a typical match;
@@ -47,6 +49,7 @@ def merge(
     weights = {LEXICAL: settings.lexical_weight, RECENCY: settings.recency_weight}
     pinned: dict[uuid.UUID, Hit] = {}
     best: dict[uuid.UUID, tuple[float, Hit]] = {}
+    matched: dict[uuid.UUID, float] = {}
     found_by: dict[uuid.UUID, list[str]] = {}
 
     for result in results:
@@ -58,23 +61,30 @@ def merge(
                 continue
             normalised = hit.score / top if top > 0 else 0.0
             weighted = normalised * weights[result.strategy]
+            if result.strategy == LEXICAL:
+                matched[hit.memory_id] = weighted
             if hit.memory_id not in best or weighted > best[hit.memory_id][0]:
                 best[hit.memory_id] = (weighted, hit)
 
+    def order(item: tuple[float, uuid.UUID, Hit]) -> tuple[float, float, float, uuid.UUID]:
+        score, memory_id, hit = item
+        return (-score, -hit.provenance.confidence, -hit.provenance.created_at.timestamp(),
+                memory_id)
+
+    # A pinned memory is placed by how well the search matched it, and by
+    # nothing else a strategy said: being recent is not a match (spec E.3).
     always = [
         Retrieved(memory_id, 1.0, True, tuple(found_by[memory_id]), hit.subject, hit.content,
                   hit.provenance)
-        for memory_id, hit in sorted(pinned.items())
+        for _, memory_id, hit in sorted(
+            ((matched.get(memory_id, 0.0), memory_id, hit) for memory_id, hit in pinned.items()),
+            key=order,
+        )
     ]
     ranked = sorted(
         ((score, memory_id, hit) for memory_id, (score, hit) in best.items()
          if memory_id not in pinned),
-        key=lambda item: (
-            -item[0],
-            -item[2].provenance.confidence,
-            -item[2].provenance.created_at.timestamp(),
-            item[1],
-        ),
+        key=order,
     )
     room = max(settings.k - len(always), 0)
     rest = [
