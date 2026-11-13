@@ -578,6 +578,10 @@ class TurnService:
         memory: that takes a separate call by the person, naming the proposal.
         """
         attempts: tuple[uuid.UUID, ...] = ()
+        # What the completion transaction wrote. Read only after that
+        # transaction has committed (`outcome.ok`), and never fetched again: a
+        # second read that failed would report a saved proposal as a failed one.
+        recorded: list[Proposal] = []
         try:
             bundle = compile_context(
                 CompileRequest(
@@ -593,7 +597,7 @@ class TurnService:
             def record(
                 uow: UnitOfWork, invocation_id: uuid.UUID, claim: ProposedClaim, at: datetime
             ) -> None:
-                proposal_id = proposals.propose(
+                proposal = proposals.propose(
                     uow,
                     conversation_id=conversation_id,
                     turn_id=turn_id,
@@ -602,12 +606,13 @@ class TurnService:
                     claim=claim,
                     now=at,
                 )
+                recorded[:] = [proposal]
                 uow.record(
                     AuditEvent(
                         event_type=EventType.MEMORY_PROPOSED,
                         actor=Actor.MODEL,
                         subject_kind="memory_proposal",
-                        subject_id=proposal_id,
+                        subject_id=proposal.id,
                         conversation_id=conversation_id,
                         turn_id=turn_id,
                         occurred_at=at,
@@ -633,8 +638,7 @@ class TurnService:
             )
             if outcome is None or not outcome.ok:
                 return None, attempts
-            with unit_of_work(self._db, expect_audit=False) as uow:
-                return proposals.for_turn(uow, turn_id), attempts
+            return recorded[0], attempts
         except Exception:  # noqa: BLE001 - memory capture never takes the conversation down
             log.error("proposal.failed", extra={"turn_id": str(turn_id)}, exc_info=True)
             return None, attempts

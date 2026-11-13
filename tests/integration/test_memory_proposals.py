@@ -547,6 +547,30 @@ def test_a_proposal_that_cannot_be_recorded_fails_its_invocation_whole(
                 e["subject_id"] == result.invocation_ids[-1]]
 
 
+def test_a_committed_proposal_is_offered_even_if_it_cannot_be_read_back(
+    db: Database, service_factory, clock, monkeypatch
+) -> None:
+    """Once the pending row has committed, the turn must not say nothing was saved."""
+    from apollo.memory import proposals as structuring
+
+    def unreadable(*args: Any, **kwargs: Any) -> None:
+        raise psycopg.OperationalError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(structuring, "for_turn", unreadable)
+    result, _ = _say(db, service_factory, clock)
+
+    [proposal] = _proposals(db)
+    assert proposal["status"] == "pending"
+    assert result.proposal is not None and not result.capture_failed
+    assert (result.proposal.id, result.proposal.status, result.proposal.content) == (
+        proposal["id"], ProposalStatus.PENDING, CLAIM,
+    )
+    # What the turn handed back is the row, field for field.
+    monkeypatch.undo()
+    assert result.proposal == surface.get_proposal(db, proposal["id"])
+    assert _rows(db, "SELECT 1 FROM message WHERE role = 'system_note'") == []
+
+
 # -- the database holds the rules too (migration 0005) ---------------------------------------
 
 

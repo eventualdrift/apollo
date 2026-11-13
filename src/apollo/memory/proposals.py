@@ -197,11 +197,16 @@ def propose(
     source_message_id: uuid.UUID,
     claim: ProposedClaim,
     now: datetime,
-) -> uuid.UUID:
-    """Record a pending proposal. At most one per turn; the database refuses a second."""
+) -> Proposal:
+    """Record a pending proposal. At most one per turn; the database refuses a second.
+
+    Returns the proposal as it was written, so the caller can offer it once
+    the transaction commits without reading it back: a read that failed then
+    would leave a pending proposal nobody was told about.
+    """
     if claim.scope not in PROPOSAL_SCOPES:
         raise ProposalError("a proposal cannot have scope self; use direct entry")
-    return ProposalRepository(uow).insert_pending(
+    proposal_id = ProposalRepository(uow).insert_pending(
         conversation_id=conversation_id,
         turn_id=turn_id,
         model_invocation_id=model_invocation_id,
@@ -211,6 +216,21 @@ def propose(
         subject=claim.subject,
         content=claim.content,
         now=now,
+    )
+    return Proposal(
+        id=proposal_id,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        model_invocation_id=model_invocation_id,
+        source_message_id=source_message_id,
+        scope=claim.scope,
+        kind=claim.kind,
+        subject=claim.subject,
+        content=claim.content,
+        status=ProposalStatus.PENDING,
+        resulting_memory_id=None,
+        created_at=now,
+        resolved_at=None,
     )
 
 
