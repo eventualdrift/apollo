@@ -721,7 +721,9 @@ class TurnService:
                     )
                 )
         except FinalisationConflictError:
-            return self._as_recorded(turn_id, invocation_ids)
+            # The reply was not recorded and is not delivered. A proposal was
+            # recorded before this, in its own transaction, and still stands.
+            return self._as_recorded(turn_id, invocation_ids, proposal=proposal)
         return TurnResult(
             turn_id=turn_id,
             status="completed",
@@ -799,7 +801,11 @@ class TurnService:
         )
 
     def _as_recorded(
-        self, turn_id: uuid.UUID, invocation_ids: tuple[uuid.UUID, ...]
+        self,
+        turn_id: uuid.UUID,
+        invocation_ids: tuple[uuid.UUID, ...],
+        *,
+        proposal: Proposal | None = None,
     ) -> TurnResult:
         """The turn was finalised before this attempt to: report what is recorded.
 
@@ -807,6 +813,10 @@ class TurnService:
         call is still running. The late finalisation rolled back whole, so the
         transcript gains no reply and no note, and the caller is told what the
         rows say rather than what the late result would have said.
+
+        `proposal` is a pending proposal this turn had already committed. It is
+        a row too, so it is reported: left out, it would sit pending with its
+        text and nobody would have been offered it.
         """
         with unit_of_work(self._db, expect_audit=False) as uow:
             turn = TurnRepository(uow).get(turn_id)
@@ -822,6 +832,7 @@ class TurnService:
             response_message_id=turn["response_message_id"],
             invocation_ids=invocation_ids,
             error_kind=turn["error_kind"],
+            proposal=proposal,
         )
 
     def _record_policy_refusal(
@@ -865,12 +876,25 @@ class TurnService:
                 )
                 row = cur.fetchone()
                 response = row["content"] if row else None
-            invocation_ids = tuple(
-                row["id"] for row in InvocationRepository(uow).for_turn(turn["id"])
-            )
+            recorded = InvocationRepository(uow).for_turn(turn["id"])
+            invocation_ids = tuple(row["id"] for row in recorded)
             # Still offered if it is still pending: a proposal must not die
             # because the client asked twice (spec C.9).
             proposal = proposals.for_turn(uow, turn["id"])
+            # And if it could not be made, that is said again. A proposal row
+            # is never removed, so a structuring call with no row is a capture
+            # that failed; the note covers a failure before any call was made.
+            noted = uow.execute(
+                "SELECT 1 FROM message WHERE turn_id = %s AND role = 'system_note'"
+                " AND content = %s",
+                (turn["id"], SYSTEM_NOTE_CAPTURE_FAILED),
+            ).fetchone()
+            capture_failed = (
+                turn["status"] == "completed"
+                and proposal is None
+                and (noted is not None
+                     or any(row["purpose"] == "memory_proposal" for row in recorded))
+            )
         return TurnResult(
             turn_id=turn["id"],
             status=turn["status"],
@@ -879,6 +903,7 @@ class TurnService:
             invocation_ids=invocation_ids,
             error_kind=turn["error_kind"],
             replayed=True,
+            capture_failed=capture_failed,
             proposal=(
                 proposal if proposal is not None
                 and proposal.status is proposals.ProposalStatus.PENDING else None

@@ -571,6 +571,59 @@ def test_a_committed_proposal_is_offered_even_if_it_cannot_be_read_back(
     assert _rows(db, "SELECT 1 FROM message WHERE role = 'system_note'") == []
 
 
+def test_a_repeated_request_repeats_that_the_capture_failed(
+    db: Database, service_factory, clock
+) -> None:
+    """The client that asks twice is told the same thing twice: nothing was saved."""
+    brain = ProposingBrain("Sure, noted!")
+    conversation = create_conversation(db, now=clock())
+    first, _ = _say(db, service_factory, clock, brain=brain, conversation=conversation,
+                    idempotency_key="k1")
+    again, _ = _say(db, service_factory, clock, brain=brain, conversation=conversation,
+                    idempotency_key="k1")
+    assert first.capture_failed and again.replayed
+    assert again.capture_failed and again.proposal is None
+    assert len(brain.structurings) == 1  # reported from the record, not tried again
+
+    # A turn that never asked for a memory reports no failed capture on replay.
+    plain, _ = _say(db, service_factory, clock, "Hello.", conversation=conversation,
+                    idempotency_key="k2")
+    plain_again, _ = _say(db, service_factory, clock, "Hello.", conversation=conversation,
+                          idempotency_key="k2")
+    assert not plain.capture_failed and not plain_again.capture_failed
+
+
+def test_a_committed_proposal_is_offered_even_when_the_turn_is_finalised_elsewhere(
+    db: Database, service_factory, clock, monkeypatch
+) -> None:
+    """Crash recovery marks the turn interrupted between the proposal and the turn's end.
+
+    The reply is discarded, as the rows say (it was never recorded). The
+    proposal was recorded, so it is still handed to the client: a pending
+    proposal nobody was told about would hold its text until it expired.
+    """
+    from apollo.core.turns import TurnService
+
+    elsewhere = service_factory()  # another `apollo say`, starting up
+    finalise = TurnService._complete_turn
+
+    def recovered_first(self: Any, **kwargs: Any) -> Any:
+        clock.now += timedelta(seconds=901)  # past the orphan window
+        assert elsewhere.recover_orphans()["turns"] == 1
+        return finalise(self, **kwargs)
+
+    monkeypatch.setattr(TurnService, "_complete_turn", recovered_first)
+    result, _ = _say(db, service_factory, clock)
+
+    assert (result.status, result.error_kind, result.response) == ("failed", "interrupted", None)
+    [proposal] = _proposals(db)
+    assert proposal["status"] == "pending"
+    assert result.proposal is not None and result.proposal.id == proposal["id"]
+    assert result.proposal.content == CLAIM and not result.capture_failed
+    # Still his to decide.
+    assert surface.save_proposal(db, proposal["id"], now=clock()).memory_id is not None
+
+
 # -- the database holds the rules too (migration 0005) ---------------------------------------
 
 
