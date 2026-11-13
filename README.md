@@ -20,7 +20,7 @@ the two compatibility gates. See [`docs/operations/persona-eval.md`](docs/operat
 Gate 1 is mechanical and runs today. **Gate 2 is empirical and needs a real model**: a run against
 `brain.fake` exercises the machinery and says nothing about Apollo's behaviour.
 
-## Milestone 3 (in progress)
+## Milestone 3 (built; not yet run on a real model)
 
 Apollo remembers what he was asked to remember. A memory is created only on Janu's authority
 (`apollo memory add`, below), and every reply searches them:
@@ -40,6 +40,16 @@ recorded sweep chose the `english` text-search configuration and the match thres
 When a message asks Apollo to remember something, he offers a **proposal**: the claim as he
 would store it, for Janu to save, edit or ignore (see "Asking Apollo to remember" below). A
 proposal is not a memory, and nothing Apollo generates can turn one into a memory.
+
+What milestone 3 still lacks is a run against a real model: spec J.5 requires the persona suite
+for the compiler change that put memory in the reply, and no proposal has been structured by a
+real model yet. Everything above is proven on `brain.fake`, which shows the machinery and nothing
+about a model's behaviour.
+
+## Milestone 4 (in progress)
+
+Honest under failure, auditable end to end. So far: **replay**. Apollo stores no prompt, and can
+still rebuild what any model call was sent and prove it (see "What a turn was sent" below).
 
 ## Two database roles
 
@@ -222,6 +232,55 @@ looks for the claim in every text, json, `tsvector` and array column of every ta
 the CLI's output, a persona run record and a reply rendered afterwards. It finds the claim only
 in the source message and in the query recorded for that message's own turn, and it finds the
 hashes of both turns that had used the memory redacted.
+
+## What a turn was sent
+
+```sh
+apollo turn list <conversation>        # a conversation's turns, with their ids
+apollo turn replay <turn>              # rebuild each model call of the turn and verify it
+apollo turn replay <turn> --context    # also print each rebuilt request
+```
+
+Apollo does not store the prompts he sends. Each model call records a manifest instead: what
+each block of its context was and which row its text came from, the versions that built and
+rendered it, and two hashes. `apollo turn replay` reads those rows, rebuilds the context, renders
+it again, and compares both hashes. It reports two statuses per call:
+
+| `bundle` | |
+|---|---|
+| `VERIFIED` | Every source is present and the rebuilt context matches the recorded hash. |
+| `MISMATCH` | Every source is present and the hash differs. Something that should never change has changed: a bug worth knowing about. |
+| `SOURCE_REDACTED` | A memory the call used has been forgotten. Replay stops and names it. |
+| `SOURCE_MISSING` | A source is absent and was not forgotten. Each is named with the reason. |
+
+| `render` | |
+|---|---|
+| `VERIFIED` | The rebuilt request matches what was sent. |
+| `MISMATCH` | It was rebuilt, and differs. |
+| `RENDERER_UNAVAILABLE` | This version of Apollo no longer has the renderer that call used. |
+| `NOT_ATTEMPTED` | The context did not verify, or the call never completed and so recorded no hash. |
+
+- **Forgetting wins over replay.** A turn that used a forgotten memory can no longer be rebuilt,
+  and Apollo does not keep the text so that it could be. The memory is never rebuilt from
+  anything else that happens to say the same, such as the message you first said it in.
+- **The message itself is not a memory.** The turn in which you said something replays in full
+  after you forget the memory made from it, because the message is still there (see "Deleting a
+  memory").
+- **A failed call replays too.** Its context was built before the call, so `--context` shows what
+  it would have sent. That is what makes a failure and its retry comparable.
+- **Correcting, confirming, contradicting or archiving a memory changes no earlier turn.** The
+  corrected row keeps its text, and a memory's provenance as it was shown is in the manifest.
+- **Each call is replayed with the versions it recorded**, not today's: `compiler-v1` and
+  `compiler-v2`, and the `chat-v1`, `chat-v2` and `chat-v3` renderers. A provider configured
+  without a system role records its own version (`chat-v3-nosystem`), since the request it is
+  sent is different.
+- **Eval turns do not replay from the database.** A persona case's text lives in its case file,
+  so its sources are reported as `not_a_database_row`. `apollo eval gate2` rebuilds eval contexts
+  from the run record instead.
+
+`replay` exits 1 when a call has a `MISMATCH` or a `SOURCE_MISSING`, and 0 otherwise. It only
+reads: it writes no row and no audit event. `--context` prints conversation and memory text to
+your terminal; nothing else does, and none of it is logged.
 
 ## Checks
 

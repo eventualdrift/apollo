@@ -126,3 +126,24 @@ class RetrievalRepository:
                 (retrieval_id, memory_id, rank, score, included),
             )
         return retrieval_id
+
+    # -- reads: the per-turn record, for replay (spec H.4) -----------------------
+
+    def strategies_for_turn(self, turn_id: uuid.UUID) -> dict[str, dict[str, Any]]:
+        """What each strategy was asked and how many results it returned, by strategy."""
+        cur = self._uow.execute(
+            "SELECT strategy, query_text, result_count FROM turn_retrieval WHERE turn_id = %s",
+            (turn_id,),
+        )
+        return {row["strategy"]: row for row in cur.fetchall()}
+
+    def distinct_results(self, turn_id: uuid.UUID, strategies: tuple[str, ...]) -> int:
+        """How many different memories the given strategies found between them."""
+        cur = self._uow.execute(
+            "SELECT count(DISTINCT r.memory_id) AS n FROM turn_retrieval_result r"
+            " JOIN turn_retrieval t ON t.id = r.turn_retrieval_id"
+            " WHERE t.turn_id = %s AND t.strategy = ANY(%s)",
+            (turn_id, list(strategies)),
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0

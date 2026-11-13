@@ -114,8 +114,43 @@ CHAT_RENDER_VERSIONS = ("chat-v1", "chat-v2", "chat-v3")
 _HEADERS_WITHOUT_ATTRIBUTES = frozenset({"chat-v1", "chat-v2"})
 
 
+#: A provider with no system role is sent the policy region as the first user
+#: message instead. That changes the bytes sent, so it is a different
+#: transformation and has its own render version: ADR-0002 lists "system-role
+#: placement" among the things a render version identifies. The plain name
+#: means the policy region went in the system role.
+NO_SYSTEM_ROLE_SUFFIX = "-nosystem"
+
+
 class UnknownRenderVersionError(ApolloError):
     """A render version this code cannot produce."""
+
+
+def render_version_for(
+    *, supports_system_role: bool, chat_version: str = CHAT_RENDER_VERSION
+) -> str:
+    """The render version an adapter records for the chat rendering it uses."""
+    return chat_version if supports_system_role else chat_version + NO_SYSTEM_ROLE_SUFFIX
+
+
+def split_render_version(render_version: str) -> tuple[str, bool] | None:
+    """(chat version, whether a system role was used). None if it is not implemented."""
+    without_system = render_version.endswith(NO_SYSTEM_ROLE_SUFFIX)
+    chat_version = render_version.removesuffix(NO_SYSTEM_ROLE_SUFFIX)
+    if chat_version not in CHAT_RENDER_VERSIONS:
+        return None
+    return chat_version, not without_system
+
+
+def render_as(bundle: ContextBundle, render_version: str) -> RenderedRequest:
+    """Render a bundle exactly as the named render version does."""
+    split = split_render_version(render_version)
+    if split is None:
+        raise UnknownRenderVersionError(f"unknown render version {render_version!r}")
+    chat_version, supports_system_role = split
+    return render_chat(
+        bundle, supports_system_role=supports_system_role, render_version=chat_version
+    )
 
 
 def render_chat(

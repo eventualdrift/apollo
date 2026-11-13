@@ -36,3 +36,11 @@ class ConservativeEstimator:
 
 
 CONSERVATIVE = ConservativeEstimator()
+
+#: Every estimator this code can still run, by the name an invocation records.
+#: Replay recounts a bundle's blocks with the estimator of its vintage (spec H.4).
+ESTIMATORS: dict[str, TokenEstimator] = {CONSERVATIVE.name: CONSERVATIVE}
+
+
+def estimator_named(name: str) -> TokenEstimator | None:
+    return ESTIMATORS.get(name)
