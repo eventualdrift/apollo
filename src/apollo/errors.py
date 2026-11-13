@@ -230,3 +230,12 @@ class GenerationContractError(ApolloError):
 
 class InvocationContractError(ApolloError):
     """Raised when something tries to call a Brain outside the recorded path (ADR-0013)."""
+
+
+class InvocationRefusedError(ApolloError):
+    """The database refused to record an invocation, so no model was called.
+
+    Raised when a bundle includes a memory that was tombstoned after it was
+    retrieved: an invocation may not include a forgotten memory, because its
+    hashes could then never be redacted (spec D.7).
+    """

@@ -20,6 +20,25 @@ the two compatibility gates. See [`docs/operations/persona-eval.md`](docs/operat
 Gate 1 is mechanical and runs today. **Gate 2 is empirical and needs a real model**: a run against
 `brain.fake` exercises the machinery and says nothing about Apollo's behaviour.
 
+## Milestone 3 (in progress)
+
+Apollo remembers what he was asked to remember. A memory is created only on Janu's authority
+(`apollo memory add`, below), and every reply searches them:
+
+- **What matches reaches the model as data, with its provenance.** Each memory is one fenced
+  block whose header says where it came from, how well attested it is, how old the record is and
+  how it was found. Memories are global; conversation history stays in its conversation.
+- **Every turn states what was searched**, whether or not anything matched. When nothing did, the
+  model is told so in as many words, and recent but unrelated memories are labelled as only
+  recent, so they cannot pass for a match.
+- **A search that fails is stated as failed**, never as "nothing found". The turn continues.
+- What each turn searched, found and actually used is recorded with the turn.
+
+Retrieval is measured by its own suite (`evals/retrieval/`), with no model, on every commit. Its
+recorded sweep chose the `english` text-search configuration and the match threshold.
+
+Still to come in this milestone: Apollo proposing a memory when asked to remember something.
+
 ## Two database roles
 
 Apollo runs as a least-privilege role that **cannot modify the audit stream**. That is a load-bearing
@@ -141,16 +160,18 @@ is **logical deletion, not physical erasure**. What it does not reach:
   that message in its history on later turns (while it fits in the context), so the fact stays in
   context there; a new conversation won't have it.
 - **Apollo's replies.** A reply that repeated the claim keeps it.
-- **Retrieval queries.** From step 11, the text of a query Apollo searched memory with is recorded
+- **Retrieval queries.** The text of a query Apollo searched memory with is recorded
   with the turn, and can contain the claim.
 - **PostgreSQL below the rows.** Old row versions until vacuum reclaims them, the write-ahead log,
   replicas, and any dump or backup taken before the tombstone. Nothing overwrites them.
 - **Outside Apollo.** The server log (see "PostgreSQL's own log" above), your terminal and shell
   history, and any file you piped the text from.
 
-A test tombstones a memory made from a message and then looks for the claim in every text,
-json, `tsvector` and array column of every table, the logs, the CLI's output, a persona run
-record and a reply rendered afterwards: only the source message still holds it.
+A test makes a memory from a message, has two real turns retrieve it, tombstones it, and then
+looks for the claim in every text, json, `tsvector` and array column of every table, the logs,
+the CLI's output, a persona run record and a reply rendered afterwards. It finds the claim only
+in the source message and in the query recorded for that message's own turn, and it finds the
+hashes of both turns that had used the memory redacted.
 
 ## Checks
 

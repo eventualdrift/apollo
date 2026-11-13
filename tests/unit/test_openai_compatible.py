@@ -31,7 +31,12 @@ from apollo.brains.openai_compatible import OpenAICompatibleBrain
 from apollo.config import ProviderConfig
 from apollo.context.budget import Budget
 from apollo.context.bundle import Purpose, Region
-from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
+from apollo.context.compiler import (
+    CompileRequest,
+    HistoryMessage,
+    RetrievalInput,
+    compile_context,
+)
 from apollo.context.escaping import escape
 from apollo.context.estimator import CONSERVATIVE
 from apollo.core.identity import compose_identity
@@ -70,6 +75,7 @@ def a_bundle(user_message="What is 2+2?", history=()):
             estimator=CONSERVATIVE,
             identity=compose_identity(REPO / "identity"),
             history=tuple(history),
+            retrieval=RetrievalInput(),
         )
     )
 
@@ -123,7 +129,7 @@ def test_it_satisfies_the_brain_protocol() -> None:
     brain = a_brain()
     assert isinstance(brain, Brain)
     assert brain.adapter_key == "openai_compatible"
-    assert brain.render_version == "chat-v2"
+    assert brain.render_version == "chat-v3"
 
 
 def test_capabilities_cover_the_configured_budget() -> None:

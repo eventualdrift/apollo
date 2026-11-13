@@ -83,9 +83,20 @@ class ContextBlock:
     #: For history blocks, the conversational role the adapter must preserve.
     role: str | None = None
     taint: int = 0
+    #: Core-authored provenance for the block's fence header (spec B.4), in
+    #: order: a MEMORY block's scope, origin, support, confidence, observation
+    #: count, age and how it was found. Closed values and numbers only, never
+    #: text from the claim. Empty for every other block.
+    attributes: tuple[tuple[str, str], ...] = ()
 
     def manifest_entry(self, *, included: bool, drop_reason: str | None = None) -> dict[str, Any]:
-        """Manifest entries carry references and metadata, never content (spec F.6)."""
+        """Manifest entries carry references and metadata, never content (spec F.6).
+
+        A block's attributes are metadata, and they are recorded here because
+        they cannot be re-derived later: support and the observation count
+        move with every confirmation, and age with the clock. Replay reads
+        them back from the manifest, so it needs neither.
+        """
         entry: dict[str, Any] = {
             "position": self.position,
             "block_type": str(self.block_type),
@@ -97,6 +108,8 @@ class ContextBlock:
             "tokens": self.token_estimate,
             "included": included,
         }
+        if self.attributes:
+            entry["attributes"] = [[key, value] for key, value in self.attributes]
         if drop_reason:
             entry["drop_reason"] = drop_reason
         return entry

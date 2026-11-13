@@ -8,15 +8,18 @@ Determinism (spec F.4) is achieved by handling the three practical hazards
 explicitly: `now` is passed in and never read from the clock here; collections
 are sorted before assembly; ties break on a stable key.
 
-M1 note: retrieval does not exist yet (it arrives at step 11), so the reply
-bundle carries the honest "nothing was searched" notice rather than inventing
-future retrieval behaviour.
+Every compiler version is still buildable (`CompileRequest.compiler_version`),
+because replay rebuilds an invocation's bundle with the builder of its vintage
+(spec H.4). `compiler-v1` reply bundles carry no memory and a fixed notice;
+`compiler-v2` carries what retrieval found, or says that it failed.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import re
+import uuid
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -37,9 +40,16 @@ from apollo.context.bundle import (
     compute_bundle_hash,
 )
 from apollo.context.estimator import TokenEstimator
-from apollo.context.rules import COMPILER_VERSION, CONTEXT_RULES, PROPOSAL_RULES
+from apollo.context.rules import (
+    COMPILER_V1,
+    COMPILER_VERSION,
+    COMPILER_VERSIONS,
+    CONTEXT_RULES_BY_VERSION,
+    PROPOSAL_RULES_BY_VERSION,
+)
 from apollo.core.identity import Identity
-from apollo.errors import HistoryRoleError
+from apollo.errors import ApolloError, HistoryRoleError
+from apollo.memory.models import MANIFEST_SOURCE_KIND, manifest_source_ref
 
 log = logging.getLogger(__name__)
 
@@ -49,8 +59,8 @@ log = logging.getLogger(__name__)
 #: be mapped to.
 CONVERSATIONAL_ROLES = frozenset({"user", "apollo"})
 
-#: Emitted on every turn. A block that appears only on failure is a block the
-#: model learns to read as an alarm (spec E.3).
+#: compiler-v1's notice: retrieval did not exist yet, so it said so. Kept byte
+#: for byte; bundles recorded under compiler-v1 hash over it.
 NO_RETRIEVAL_NOTICE = """\
 Memory searched: not yet available in this build.
 Substantive matches: 0
@@ -60,12 +70,91 @@ Absence of a memory means nothing was recorded or nothing matched — it is not 
 something did not happen. Say so plainly rather than reconstructing a plausible recollection.
 """
 
+#: The closing paragraph of the notice (spec F.3). The first is the spec's own
+#: wording for honest absence; its last clause guards the opposite failure, a
+#: system pushed so hard on "don't fabricate" that it denies things that
+#: happened but were never written down.
+NOTICE_NOTHING_MATCHED = (
+    "No stored memory bears on this. Absence of a memory means nothing was recorded or nothing "
+    "matched — it is not evidence that something did not happen. Say so plainly rather than "
+    "reconstructing a plausible recollection."
+)
+NOTICE_MATCHED = (
+    "The memories above marked match=pinned or match=lexical are what memory holds for this "
+    "message. Use them where they bear on it. If they do not answer what was asked, say so "
+    "plainly rather than reconstructing a plausible recollection."
+)
+NOTICE_MATCHED_NOT_SHOWN = (
+    "Memories matched this message, but none of them fits in this context, so none is shown. "
+    "Say that memory could not be consulted in full this time rather than reconstructing a "
+    "plausible recollection."
+)
+
+#: What the model is told when the search itself failed (spec L): a failed
+#: search and an empty one are different facts, and this is never worded as
+#: "nothing found".
+RETRIEVAL_ERROR_NOTICE = """\
+Memory search failed on this turn, so Apollo's memory is unavailable for it. Nothing was \
+searched. This is not a finding that no memory exists.
+
+If the message depends on something Apollo may have been asked to remember, say that memory \
+could not be checked this time. Do not answer from a guess, and do not say nothing is recorded.
+"""
+
+#: Attribute values are closed words and numbers. Anything else would let a
+#: fence header carry text Core did not author.
+_ATTRIBUTE = re.compile(r"[a-z0-9_.]+")
+
+
+class CompileInputError(ApolloError):
+    """The compiler was handed something it must not build a bundle from."""
+
 
 @dataclass(frozen=True)
 class HistoryMessage:
     message_id: str
     role: str
     content: str
+
+
+@dataclass(frozen=True)
+class MemoryItem:
+    """One retrieved memory, as the compiler needs it (spec F.2, B.4).
+
+    `attributes` is the block's provenance header in order: scope, origin,
+    support, confidence, obs, age, match. `pinned` puts it ahead of the ranked
+    ones, and first in line for the memory budget.
+    """
+
+    memory_id: uuid.UUID
+    content: str
+    pinned: bool
+    #: Found by pinned or lexical, not merely recent (spec E.3).
+    substantive: bool
+    attributes: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class RetrievalInput:
+    """What retrieval found for this turn, or that it failed (spec E.3, F.3, L).
+
+    `memories` is in final order: pinned first, then by rank. The counts are
+    per strategy; `lexical_matches` counts results above the floor.
+    `substantive_matches` is the number of distinct memories found by pinned
+    or lexical, and is zero exactly when there is no substantive support.
+    """
+
+    memories: tuple[MemoryItem, ...] = ()
+    query_text: str | None = None
+    pinned_count: int = 0
+    lexical_matches: int = 0
+    recency_count: int = 0
+    substantive_matches: int = 0
+    failed: bool = False
+
+    @classmethod
+    def failure(cls) -> RetrievalInput:
+        return cls(failed=True)
 
 
 @dataclass(frozen=True)
@@ -78,9 +167,15 @@ class CompileRequest:
     estimator: TokenEstimator
     identity: Identity | None = None
     history: tuple[HistoryMessage, ...] = ()
+    #: Required for a reply from compiler-v2 on: absence is stated, never implied.
+    retrieval: RetrievalInput | None = None
+    #: The builder's vintage. Anything but the current one is for replay.
+    compiler_version: str = COMPILER_VERSION
 
 
 def compile_context(request: CompileRequest) -> ContextBundle:
+    if request.compiler_version not in COMPILER_VERSIONS:
+        raise CompileInputError(f"unknown compiler version {request.compiler_version!r}")
     _validate_history_roles(request.history)
     if request.purpose is Purpose.REPLY:
         return _compile_reply(request)
@@ -107,21 +202,17 @@ def _compile_reply(req: CompileRequest) -> ContextBundle:
     if req.identity is None:
         raise ValueError("a reply bundle requires an identity")
     est = req.estimator
+    version = req.compiler_version
     policy: list[ContextBlock] = [
         _block(BlockType.IDENTITY, TrustTier.CANONICAL, Region.POLICY, "identity",
                req.identity.content_hash, req.identity.content, est),
         _block(BlockType.CONTEXT_RULES, TrustTier.CANONICAL, Region.POLICY, "compiler",
-               COMPILER_VERSION, CONTEXT_RULES, est),
+               version, CONTEXT_RULES_BY_VERSION[version], est),
     ]
     policy_tokens = sum(b.token_estimate for b in policy)
     check_policy_region(policy_tokens, req.budget)
 
-    # No MEMORY blocks in M1: retrieval arrives at step 11. The notice is still
-    # present, because absence must be stated rather than left as silence.
-    data: list[ContextBlock] = [
-        _block(BlockType.RETRIEVAL_NOTICE, TrustTier.CANONICAL, Region.DATA, "compiler",
-               COMPILER_VERSION, NO_RETRIEVAL_NOTICE, est),
-    ]
+    data, dropped = _data_region(req)
     data_tokens = sum(b.token_estimate for b in data)
 
     request_block = _block(
@@ -143,13 +234,143 @@ def _compile_reply(req: CompileRequest) -> ContextBundle:
                Region.HISTORY, "message", m.message_id, m.content, est, role=m.role)
         for m in req.history
     ]
-    kept, dropped = _fit_history(history_blocks, allowance)
+    kept, dropped_history = _fit_history(history_blocks, allowance)
     assert_conversation_floor(
         [b.source_ref for b in kept], [b.source_ref for b in history_blocks]
     )
 
     ordered = [*policy, *data, *kept, request_block]
-    return _finalise(req, ordered, dropped, identity=req.identity)
+    return _finalise(req, ordered, [*dropped, *dropped_history], identity=req.identity)
+
+
+def _data_region(
+    req: CompileRequest,
+) -> tuple[list[ContextBlock], list[tuple[ContextBlock, str]]]:
+    """The reply's data blocks, and the memories the budget dropped (spec F.2, F.5).
+
+    compiler-v1 had no retrieval: one fixed notice. From compiler-v2 the
+    region is MEMORY blocks then RETRIEVAL_NOTICE, which is present on every
+    turn, or a single RETRIEVAL_ERROR when the search failed. A failed search
+    is never rendered as an empty one (spec L).
+    """
+    est = req.estimator
+    version = req.compiler_version
+    if version == COMPILER_V1:
+        return [_notice(BlockType.RETRIEVAL_NOTICE, NO_RETRIEVAL_NOTICE, version, est)], []
+    retrieval = req.retrieval
+    if retrieval is None:
+        raise CompileInputError(
+            "a reply bundle states what retrieval found: pass the retrieval result, "
+            "or RetrievalInput.failure() when the search failed"
+        )
+    if retrieval.failed:
+        return [_notice(BlockType.RETRIEVAL_ERROR, RETRIEVAL_ERROR_NOTICE, version, est)], []
+
+    memories, dropped = _fit_memories(retrieval.memories, req.budget.memory_cap, est)
+    shown = sum(
+        1 for item in retrieval.memories
+        if item.substantive and any(
+            b.source_ref == manifest_source_ref(item.memory_id) for b in memories
+        )
+    )
+    notice = _notice(
+        BlockType.RETRIEVAL_NOTICE, retrieval_notice(retrieval, shown=shown), version, est
+    )
+    return [*memories, notice], dropped
+
+
+def retrieval_notice(retrieval: RetrievalInput, *, shown: int) -> str:
+    """The notice body (spec F.3): what was searched, per strategy, and what it means.
+
+    The same shape whether or not anything matched, so the block is a fact the
+    model reads every turn rather than an alarm it learns to react to.
+
+    `shown` is how many of the matched memories are in this bundle. Fewer than
+    matched means the merge's K or the memory budget left some out, and the
+    notice says so: "Apollo had that memory, why didn't he use it" should be
+    answerable from the context itself.
+    """
+    query = _one_line(retrieval.query_text or "")
+    searched = (
+        f'Memory searched: "{query}"' if query else "Memory searched: (no words to search with)"
+    )
+    strategies = (
+        f"Strategies: pinned({retrieval.pinned_count}), "
+        f"lexical({retrieval.lexical_matches} above threshold), "
+        f"recency({retrieval.recency_count}, fallback only — not support)"
+    )
+    matched = retrieval.substantive_matches
+    lines = [searched, strategies, f"Substantive matches: {matched}"]
+    if matched and shown < matched:
+        lines.append(f"Not shown: {matched - shown} matched, but did not fit in this context")
+    if not matched:
+        closing = NOTICE_NOTHING_MATCHED
+    elif shown:
+        closing = NOTICE_MATCHED
+    else:
+        closing = NOTICE_MATCHED_NOT_SHOWN
+    return "\n".join(lines) + f"\n\n{closing}\n"
+
+
+#: The searched text is quoted on one line of the notice. Longer than this, it
+#: is cut: the full messages are in the context already.
+NOTICE_QUERY_CHARS = 240
+
+
+def _one_line(text: str) -> str:
+    """Whitespace collapsed and length capped, so a long or multi-line message
+    cannot reshape the notice's own lines."""
+    flat = " ".join(text.split())
+    if len(flat) <= NOTICE_QUERY_CHARS:
+        return flat
+    return flat[: NOTICE_QUERY_CHARS - 1].rstrip() + "…"
+
+
+def _notice(
+    block_type: BlockType, text: str, version: str, estimator: TokenEstimator
+) -> ContextBlock:
+    """A Core-authored statement of fact: T0, but in the data region (spec B.1)."""
+    return _block(block_type, TrustTier.CANONICAL, Region.DATA, "compiler", version, text,
+                  estimator)
+
+
+def _fit_memories(
+    memories: tuple[MemoryItem, ...], cap: int, estimator: TokenEstimator
+) -> tuple[list[ContextBlock], list[tuple[ContextBlock, str]]]:
+    """One block per memory, pinned first then by rank, within the memory cap.
+
+    A memory that does not fit is dropped with its reason recorded, and the
+    ones after it are still tried: unlike history, memories are independent
+    claims, so a gap hides nothing (spec F.5, F.6).
+    """
+    ordered = sorted(enumerate(memories), key=lambda item: (not item[1].pinned, item[0]))
+    kept: list[ContextBlock] = []
+    dropped: list[tuple[ContextBlock, str]] = []
+    used = 0
+    for _, memory in ordered:
+        block = _memory_block(memory, estimator)
+        if used + block.token_estimate > cap:
+            dropped.append((block, "budget:memory_cap"))
+            continue
+        used += block.token_estimate
+        kept.append(block)
+    return kept, dropped
+
+
+def _memory_block(memory: MemoryItem, estimator: TokenEstimator) -> ContextBlock:
+    for key, value in memory.attributes:
+        if not _ATTRIBUTE.fullmatch(key) or not _ATTRIBUTE.fullmatch(value):
+            raise CompileInputError(f"memory attribute {key!r} is not a closed word or number")
+    ref = manifest_source_ref(memory.memory_id)
+    block = _block(BlockType.MEMORY, TrustTier.CURATED, Region.DATA, MANIFEST_SOURCE_KIND, ref,
+                   memory.content, estimator)
+    # The header is sent too, so it is counted against the memory budget.
+    header = " ".join([ref, *(f"{key}={value}" for key, value in memory.attributes)])
+    return replace(
+        block,
+        attributes=memory.attributes,
+        token_estimate=block.token_estimate + estimator.count(header),
+    )
 
 
 def _compile_memory_proposal(req: CompileRequest) -> ContextBundle:
@@ -160,9 +381,10 @@ def _compile_memory_proposal(req: CompileRequest) -> ContextBundle:
     it is inert even though the same message carries task authority in a reply.
     """
     est = req.estimator
+    version = req.compiler_version
     policy = [
         _block(BlockType.PROPOSAL_RULES, TrustTier.CANONICAL, Region.POLICY, "compiler",
-               COMPILER_VERSION, PROPOSAL_RULES, est)
+               version, PROPOSAL_RULES_BY_VERSION[version], est)
     ]
     check_policy_region(sum(b.token_estimate for b in policy), req.budget)
     data = [
@@ -240,7 +462,7 @@ def _finalise(
     total = sum(b.token_estimate for b in blocks)
     bundle = ContextBundle(
         purpose=req.purpose,
-        compiler_version=COMPILER_VERSION,
+        compiler_version=req.compiler_version,
         estimator_name=req.estimator.name,
         blocks=blocks,
         manifest=tuple(manifest),
@@ -256,7 +478,7 @@ def _finalise(
         "context.compiled",
         extra={
             "purpose": str(req.purpose),
-            "compiler_version": COMPILER_VERSION,
+            "compiler_version": req.compiler_version,
             "block_count": len(blocks),
             "dropped": len(dropped_entries),
             "token_estimate": total,

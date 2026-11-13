@@ -30,7 +30,7 @@ from apollo.config import (
 from apollo.context.bundle import BlockType, Region
 from apollo.context.compiler import NO_RETRIEVAL_NOTICE
 from apollo.context.estimator import CONSERVATIVE
-from apollo.context.rules import COMPILER_VERSION
+from apollo.context.rules import COMPILER_V1, COMPILER_VERSION
 from apollo.core.identity import IdentityLoader, compose_identity
 from apollo.evals import notice_ablation as na
 from apollo.evals.loader import load_cases
@@ -67,6 +67,11 @@ def identity():
 
 @pytest.mark.parametrize("max_context", [9216, 16384])
 def test_production_compiler_output_is_byte_for_byte_unchanged(cases, identity, max_context):
+    """compiler-v1, the production compiler of the experiment's day, still builds the same bytes.
+
+    It is no longer the default, but replay and this sealed experiment both
+    rebuild bundles with it (spec H.4), so its output may never move.
+    """
     golden = _golden()
     assert len(golden) == len(cases) == 30
     for case in cases:
@@ -74,9 +79,13 @@ def test_production_compiler_output_is_byte_for_byte_unchanged(cases, identity, 
             case, identity=identity, max_context=max_context, identity_cap=4000, now=NOW,
             provider=ProviderConfig(key="p", kind="fake", allowed_modes=(MODE_BENCHMARK,),
                                     eval_only=True, context_budget=8000, reserved_output=1024),
+            compiler_version=COMPILER_V1,
         )
-        assert bundle.compiler_version == COMPILER_VERSION == "compiler-v1"
+        assert bundle.compiler_version == COMPILER_V1 == "compiler-v1"
         assert (bundle.bundle_hash, render_chat(bundle).prompt_hash) == golden[case.id], case.id
+        # The golden prompt hashes were captured under chat-v1; no case has the
+        # consecutive same-role history or the attributes later versions act on.
+        assert render_chat(bundle, render_version="chat-v1").prompt_hash == golden[case.id][1]
 
 
 def test_production_notice_text_is_the_historical_one():
@@ -187,7 +196,8 @@ def test_generation_ceiling_is_ten_with_no_retry_or_replacement():
 
 def test_experiment_identifier_is_distinct_and_versioned():
     assert na.EXPERIMENT_ID == "retrieval-notice-ablation-1"
-    assert na.CANDIDATE_COMPILER_VERSION == "compiler-v1-rn1" != COMPILER_VERSION
+    assert na.CANDIDATE_COMPILER_VERSION == "compiler-v1-rn1"
+    assert na.CANDIDATE_COMPILER_VERSION not in (COMPILER_V1, COMPILER_VERSION)
 
 
 # -- one-variable proof -------------------------------------------------------
@@ -412,7 +422,7 @@ def _registry(config: Config) -> BrainRegistry:
 def _artefact(tmp_path, model):
     document = {
         "run_id": model.historical_run_id,
-        "compiler_version": COMPILER_VERSION,
+        "compiler_version": COMPILER_V1,
         "brain_alias": model.brain_alias,
         "provider_key": model.provider_key,
         "generation_params": dict(na.GENERATION_PARAMS),

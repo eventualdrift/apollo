@@ -296,7 +296,7 @@ def test_same_valid_inputs_with_different_provider_capacity_remain_comparable(ev
 def test_valid_runs_with_different_retained_context_are_not_comparable(evidence):
     evidence.cases[0] = replace(
         evidence.cases[0],
-        history=(HistoryTurn("user", "history " * 1500),)
+        history=(HistoryTurn("user", "history " * 1200),)
         + tuple(HistoryTurn("user", "Short recent fixture turn.") for _ in range(4)),
     )
     evidence.incumbent = synthetic_run(evidence.cases, evidence.identity, "incumbent")

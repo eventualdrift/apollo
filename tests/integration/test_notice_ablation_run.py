@@ -18,7 +18,7 @@ from apollo.brains.fake import FakeBrain
 from apollo.brains.registry import BrainRegistry
 from apollo.config import MODE_BENCHMARK, SURFACE_EVAL, Config, ProviderConfig
 from apollo.context.bundle import BlockType, ContextBundle
-from apollo.context.compiler import NO_RETRIEVAL_NOTICE
+from apollo.context.compiler import NO_RETRIEVAL_NOTICE, RetrievalInput, retrieval_notice
 from apollo.core.conversations import create_conversation
 from apollo.core.identity import IdentityLoader, compose_identity
 from apollo.errors import BrainTransportError
@@ -127,9 +127,15 @@ def test_candidate_run_on_the_real_invocation_path(db, clock, tmp_path, service_
     assert brain.generate_calls == 5
 
     # Personal Apollo, same database, same moment: still the production notice.
+    # That is now compiler-v2's, which states the search it actually ran; the
+    # experiment's baseline and candidate texts are nowhere in it.
     personal_brain = RecordingBrain()
     service = service_factory(brain=personal_brain, config=config)
     conversation = create_conversation(db, now=clock(), title="personal")
     result = service.submit(conversation_id=conversation, text="Anything about the NAS?")
     assert result.status == "completed"
-    assert personal_brain.notices == [NO_RETRIEVAL_NOTICE]
+    [notice] = personal_brain.notices
+    assert notice == retrieval_notice(
+        RetrievalInput(query_text="Anything about the NAS?"), shown=0
+    )
+    assert notice not in (NO_RETRIEVAL_NOTICE, na.CANDIDATE_RETRIEVAL_NOTICE)

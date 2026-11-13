@@ -10,7 +10,7 @@ from apollo.brains.gate1 import run_gate1
 from apollo.brains.registry import BrainRegistry
 from apollo.config import SURFACE_EVAL, Config, ProviderConfig
 from apollo.core.identity import IdentityLoader
-from apollo.evals.gate1 import _representative_bundles, evaluate_gate1
+from apollo.evals.gate1 import _bundle_factory, _representative_bundles, evaluate_gate1
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -73,13 +73,13 @@ def test_static_success_cannot_claim_a_full_gate_one_pass() -> None:
     cfg = config()
     brain = UnreachableBrain()
     identity = IdentityLoader(cfg.identity_dir).load()
-    bundles = _representative_bundles(
+    bundles = _representative_bundles(_bundle_factory(
         config=cfg,
         provider=cfg.provider_for_alias("brain.default"),
         brain=brain,
         identity=identity,
         now=Clock()(),
-    )
+    ))
 
     report = run_gate1(brain, cfg.provider_for_alias("brain.default"), bundles)
 

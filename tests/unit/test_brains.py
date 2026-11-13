@@ -12,7 +12,12 @@ from apollo.brains.base import (
 from apollo.brains.fake import FakeBrain
 from apollo.context.budget import Budget
 from apollo.context.bundle import Purpose, Region
-from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
+from apollo.context.compiler import (
+    CompileRequest,
+    HistoryMessage,
+    RetrievalInput,
+    compile_context,
+)
 from apollo.context.escaping import contains_fence_delimiter, escape
 from apollo.context.estimator import CONSERVATIVE
 from apollo.core.identity import compose_identity
@@ -32,6 +37,7 @@ def bundle(user_message="Explain what this function does.", history=()):
             estimator=CONSERVATIVE,
             identity=compose_identity(REPO / "identity"),
             history=tuple(history),
+            retrieval=RetrievalInput(),
         )
     )
 
@@ -40,7 +46,7 @@ def test_fake_satisfies_the_brain_protocol() -> None:
     brain = FakeBrain()
     assert isinstance(brain, Brain)
     assert brain.adapter_key == "fake"
-    assert brain.render_version == "chat-v2"
+    assert brain.render_version == "chat-v3"
     assert brain.capabilities().max_context > 0
 
 

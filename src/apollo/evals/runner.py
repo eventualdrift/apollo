@@ -33,12 +33,20 @@ from apollo.brains.registry import BrainRegistry
 from apollo.config import MODE_BENCHMARK, SURFACE_EVAL, Config
 from apollo.context.budget import Budget
 from apollo.context.bundle import ContextBundle, Purpose
-from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
+from apollo.context.compiler import (
+    CompileRequest,
+    HistoryMessage,
+    RetrievalInput,
+    compile_context,
+)
 from apollo.context.estimator import CONSERVATIVE
+from apollo.context.rules import COMPILER_V1, COMPILER_VERSION
 from apollo.core import invocations
 from apollo.core.conversations import create_benchmark_conversation
 from apollo.core.identity import Identity, IdentityLoader, snapshot_identity
 from apollo.core.policy import check_brain_permitted
+from apollo.core.retrieval import TurnRetrieval, compile_input, record_for_turn, retrieve_for_turn
+from apollo.errors import ApolloError
 from apollo.evals.checks import run_checks
 from apollo.evals.evidence import (
     DETERMINISTIC_SAMPLES,
@@ -47,6 +55,9 @@ from apollo.evals.evidence import (
     corpus_hash,
 )
 from apollo.evals.models import PersonaCase, RunRecord, SampleRecord
+from apollo.memory.models import Origin
+from apollo.memory.retrieval import RetrievalQuery
+from apollo.memory.retrieval.lexical import query_text as lexical_query_text
 from apollo.sanitise import error_detail, error_kind
 from apollo.storage.db import Database
 from apollo.storage.repositories import MessageRepository, TurnRepository
@@ -65,12 +76,20 @@ def compile_case_bundle(
     max_context: int,
     identity_cap: int,
     now: datetime,
+    compiler_version: str = COMPILER_VERSION,
+    retrieval: RetrievalInput | None = None,
 ) -> ContextBundle:
     """Compile one case exactly as a run would.
 
     Module level so the privacy pre-flight can inspect the *actual* bundle a
     hosted run would send, rather than a second implementation that agrees with
     this one until the day it does not.
+
+    A case with no memory fixtures retrieves from an empty fixture store, and
+    what that search reports is fully determined by the case, so it needs no
+    database: this is what lets Gate 2 rebuild a run's bundles from the run
+    record alone. `retrieval` is what a run's real search found, which the
+    runner checks is the same thing.
     """
     history = tuple(
         HistoryMessage(message_id=case.history_ref(index), role=turn.role, content=turn.content)
@@ -92,8 +111,30 @@ def compile_case_bundle(
             estimator=CONSERVATIVE,
             identity=identity,
             history=history,
+            retrieval=retrieval if retrieval is not None else empty_store_retrieval(case),
+            compiler_version=compiler_version,
         )
     )
+
+
+def previous_user_message(case: PersonaCase) -> str | None:
+    """The last thing the fixture's user said before the input (spec E.3)."""
+    for turn in reversed(case.history):
+        if turn.role == "user":
+            return turn.content
+    return None
+
+
+def empty_store_retrieval(case: PersonaCase) -> RetrievalInput:
+    """What a search of an empty fixture store reports for this case."""
+    query = RetrievalQuery(
+        current=case.input, previous=previous_user_message(case), origin=Origin.FIXTURE
+    )
+    return RetrievalInput(query_text=lexical_query_text(query) or None)
+
+
+class PersonaRunError(ApolloError):
+    """The run's environment would make its bundles differ from the corpus's."""
 
 
 class PersonaRunner:
@@ -118,6 +159,10 @@ class PersonaRunner:
         self._identity_loader = identity_loader
         self._clock = clock or (lambda: datetime.now(UTC))
         self._runs_dir = runs_dir
+
+    #: The builder a run compiles with. A subclass replaying a sealed
+    #: experiment pins the vintage that experiment was run under.
+    compiler_version = COMPILER_VERSION
 
     def run(self, cases: list[PersonaCase], *, brain_alias: str) -> RunRecord:
         identity = self._identity_loader.load()
@@ -231,7 +276,11 @@ class PersonaRunner:
     ) -> SampleRecord:
         now = self._clock()
         provider = self._registry.provider_for(brain_alias)
-        bundle = self._compile(case, identity, provider, capabilities_max_context, now)
+        found = self._retrieve(case)
+        bundle = self._compile(
+            case, identity, provider, capabilities_max_context, now,
+            retrieval=compile_input(found, now=now) if found is not None else None,
+        )
         if not record.compiler_version:
             record.compiler_version = bundle.compiler_version
 
@@ -264,6 +313,10 @@ class PersonaRunner:
                     payload={"mode": MODE_BENCHMARK, "seq": sample_index},
                 )
             )
+
+        if found is not None:
+            # Recorded as an interactive turn's search is (spec C.5, J).
+            record_for_turn(self._db, turn_id=turn_id, found=found, bundle=bundle, now=now)
 
         invocation_id = invocations.open_invocation(
             self._db,
@@ -315,6 +368,32 @@ class PersonaRunner:
             self._fail(conversation_id, turn_id, outcome.error, now=self._clock())
         return sample
 
+    def _retrieve(self, case: PersonaCase) -> TurnRetrieval | None:
+        """Search the fixture store for real, as a benchmark conversation does.
+
+        None under compiler-v1, which had no retrieval. Otherwise the search
+        must find what the case says is there, which for a case with no memory
+        fixtures is nothing: a stray fixture memory, or a failed search, would
+        give this run a bundle no other run of the corpus has, and the
+        comparison across brains would silently stop being one.
+        """
+        if self.compiler_version == COMPILER_V1:
+            return None
+        found = retrieve_for_turn(
+            self._db,
+            current=case.input,
+            previous=previous_user_message(case),
+            conversation_mode=MODE_BENCHMARK,
+        )
+        if found.outcome is None:
+            raise PersonaRunError(f"{case.id}: memory search failed; the run cannot continue")
+        if found.outcome.merged:
+            raise PersonaRunError(
+                f"{case.id}: the benchmark scope holds fixture memories this case does not "
+                "declare; run the persona suite against a database without them"
+            )
+        return found
+
     def _compile(
         self,
         case: PersonaCase,
@@ -322,6 +401,8 @@ class PersonaRunner:
         provider: Any,
         max_context: int,
         now: datetime,
+        *,
+        retrieval: RetrievalInput | None = None,
     ) -> ContextBundle:
         return compile_case_bundle(
             case,
@@ -330,6 +411,8 @@ class PersonaRunner:
             max_context=max_context,
             identity_cap=self._config.identity_token_cap,
             now=now,
+            compiler_version=self.compiler_version,
+            retrieval=retrieval,
         )
 
     def _finalise(
