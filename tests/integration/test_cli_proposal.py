@@ -186,9 +186,21 @@ def test_stats_counts_what_happened_to_every_proposal(db: Database, apollo) -> N
     apollo("proposal", "ignore", str(ignored))
     status, out, _ = apollo("proposal", "stats")
     assert status == 0
-    assert dict(line.split() for line in out.splitlines()) == {
+    by_status, by_turn, by_day = out.split("\n\n")
+    assert dict(line.split() for line in by_status.splitlines()) == {
         "pending": "1", "saved": "1", "saved_edited": "1", "ignored": "1", "expired": "0",
     }
+    # Spec O.2: capture rate, and conversations started per day. Counts and dates only.
+    assert by_turn.splitlines() == [
+        "answered turns in your conversations: 4",
+        "  made a proposal                           4",
+        "  asked for one that could not be made      0",
+        "  asked for none                            0",
+    ]
+    heading, *days = by_day.splitlines()
+    assert heading == "conversations started, by day (UTC)"
+    # Each `_propose` started its own conversation, all on the test clock's one day.
+    assert [line.split()[1] for line in days] == ["4"] and SECRET not in out
 
 
 # -- expiry ------------------------------------------------------------------------------

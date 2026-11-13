@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from apollo.storage.ids import uuid7
@@ -30,3 +30,12 @@ class ConversationRepository:
         self._uow.execute(
             "UPDATE conversation SET last_active_at = %s WHERE id = %s", (now, conversation_id)
         )
+
+    def started_per_day(self, mode: str) -> list[tuple[date, int]]:
+        """How many conversations of `mode` were started on each UTC day, oldest first."""
+        cur = self._uow.execute(
+            "SELECT (started_at AT TIME ZONE 'UTC')::date AS day, count(*) AS n"
+            "  FROM conversation WHERE mode = %s GROUP BY 1 ORDER BY 1",
+            (mode,),
+        )
+        return [(row["day"], row["n"]) for row in cur.fetchall()]

@@ -46,21 +46,26 @@ for the compiler change that put memory in the reply, and no proposal has been s
 real model yet. Everything above is proven on `brain.fake`, which shows the machinery and nothing
 about a model's behaviour.
 
-## Milestone 4 (in progress)
+## Milestone 4 (built)
 
-Honest under failure, auditable end to end. So far:
+Honest under failure, auditable end to end.
 
 - **Replay.** Apollo stores no prompt, and can still rebuild what any model call was sent and
   prove it (see "What a turn was sent" below).
 - **Failure behaviour.** Every row of the specification's failure table is implemented and
   tested (see "When something fails" below), and no log line or stored error field carries
   message, memory or provider text.
-
 - **Backup and restore.** A backup can only be kept encrypted, a restore has been performed and
   verified, and backups expire (see "Backups" below).
 
-What is left of the technical gate needs a real model. [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md)
-says what, and why.
+## Milestone 5: the gates (not passed)
+
+**The technical gate has not passed.** Of its thirty criteria, twenty-five are proven by tests
+that run on every commit. Five wait on a run against a real model, which has not been made.
+
+[`docs/operations/acceptance.md`](docs/operations/acceptance.md) is the record: each criterion,
+what proves it, and the commands for what is left. After the technical gate comes the product
+gate, which is several days of ordinary use.
 
 ## Two database roles
 
@@ -171,7 +176,8 @@ apollo proposal list            # what is waiting; --status saved | ignored | ex
 apollo proposal save <id>       # save it as a memory, as proposed
 apollo proposal edit <id>       # change it, then save; --scope and --kind change those
 apollo proposal ignore <id>     # decline it; nothing is saved
-apollo proposal stats           # how many were saved, edited, ignored or left to expire
+apollo proposal stats           # what became of each proposal; turns that made one;
+                                # conversations started per day
 ```
 
 Apollo offers a proposal only when the message says so in one of a fixed list of phrases

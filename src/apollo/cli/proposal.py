@@ -18,6 +18,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from apollo.cli.memory import Terminal, _prompted
+from apollo.core.conversations import started_per_day
 from apollo.core.proposals import (
     Kind,
     MemoryInputError,
@@ -26,6 +27,7 @@ from apollo.core.proposals import (
     ProposalNotFoundError,
     ProposalStatus,
     Scope,
+    capture_by_turn,
     capture_counts,
     expire_proposals,
     get_proposal,
@@ -80,7 +82,8 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
         "ignore", help="decline a proposal; nothing is saved"
     ).add_argument("id")
     proposal_sub.add_parser(
-        "stats", help="how many proposals were saved, edited, ignored or left to expire"
+        "stats", help="how many proposals were saved, edited, ignored or left to expire, "
+                      "how many turns made one, and conversations started per day"
     )
 
 
@@ -254,8 +257,23 @@ def _ignore(args: argparse.Namespace, db: Database, term: Terminal, expiry: time
 
 
 def _stats(args: argparse.Namespace, db: Database, term: Terminal, expiry: timedelta) -> int:
+    """The product gate's supporting evidence (spec O.2). Counts and dates only."""
     for status, count in capture_counts(db).items():
         print(f"{status:<12} {count}", file=term.stdout)
+    by_turn = capture_by_turn(db)
+    print(f"\nanswered turns in your conversations: {by_turn.turns}", file=term.stdout)
+    for label, count in (
+        ("made a proposal", by_turn.proposed),
+        ("asked for one that could not be made", by_turn.failed),
+        ("asked for none", by_turn.not_asked),
+    ):
+        print(f"  {label:<38}{count:>5}", file=term.stdout)
+    print("\nconversations started, by day (UTC)", file=term.stdout)
+    days = started_per_day(db)
+    for day, count in days:
+        print(f"  {day.isoformat()}{count:>5}", file=term.stdout)
+    if not days:
+        print("  none yet", file=term.stdout)
     return 0
 
 
