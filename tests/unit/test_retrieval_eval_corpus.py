@@ -9,13 +9,19 @@ import pytest
 from apollo.evals.retrieval import (
     CASE_TYPES,
     SPLITS,
+    SWEEP_CONFIGS,
+    SWEEP_FLOORS,
     CaseResult,
+    Metrics,
     RetrievalCase,
     RetrievalFixtureError,
     load_case_file,
     load_case_files,
+    select_settings,
+    sweep_grid,
     unexpected_failures,
 )
+from apollo.memory.retrieval import DEFAULT_SETTINGS, RetrievalSettings
 
 CASES = pathlib.Path(__file__).resolve().parents[2] / "evals" / "retrieval" / "cases"
 
@@ -313,3 +319,59 @@ def test_only_user_asserted_claims_load_in_phase_zero(tmp_path: pathlib.Path, ti
     ))
     with pytest.raises(RetrievalFixtureError, match="only user_asserted"):
         load_case_file(path)
+
+
+# -- the selection rule (spec E.4) ---------------------------------------------------
+
+
+def _metrics(recall: float, empty: float) -> Metrics:
+    return Metrics(cases=10, passed=0, recall_at_5=recall, precision_at_5=1.0,
+                   mean_rank_of_expected=1.0, correct_empty_rate=empty)
+
+
+def _settings(floor: float, config: str = "english") -> RetrievalSettings:
+    return RetrievalSettings(lexical_floor=floor, text_search_config=config)
+
+
+def test_selection_takes_the_best_empty_rate_among_candidates_that_still_recall() -> None:
+    chosen = select_settings({
+        _settings(0.0): _metrics(recall=1.0, empty=0.6),
+        _settings(0.05): _metrics(recall=0.95, empty=0.9),
+        _settings(0.1): _metrics(recall=0.92, empty=0.9),
+    })
+    # 0.05 and 0.1 tie on the empty rate; the higher recall wins.
+    assert chosen == _settings(0.05)
+
+
+def test_selection_never_buys_a_perfect_empty_rate_with_no_recall() -> None:
+    """Strict "correct empty first" would pick the floor that rejects everything."""
+    chosen = select_settings({
+        _settings(0.0): _metrics(recall=1.0, empty=0.8),
+        _settings(0.9): _metrics(recall=0.0, empty=1.0),
+        _settings(0.5): _metrics(recall=0.89, empty=1.0),  # just under 90% of the best
+    })
+    assert chosen == _settings(0.0)
+
+
+def test_selection_breaks_a_full_tie_by_the_lower_floor_then_english() -> None:
+    same = _metrics(recall=1.0, empty=1.0)
+    assert select_settings({
+        _settings(0.05): same, _settings(0.0, "simple"): same,
+        _settings(0.0): same, _settings(0.025): same,
+    }) == _settings(0.0)
+
+
+def test_selection_prefers_the_better_configuration_over_the_baseline() -> None:
+    assert select_settings({
+        _settings(0.0): _metrics(recall=1.0, empty=0.5),
+        _settings(0.0, "simple"): _metrics(recall=1.0, empty=1.0),
+    }) == _settings(0.0, "simple")
+
+
+def test_the_sweep_grid_covers_both_configurations_and_the_defaults() -> None:
+    grid = sweep_grid()
+    assert len(grid) == len(set(grid)) == len(SWEEP_FLOORS) * len(SWEEP_CONFIGS)
+    assert {s.text_search_config for s in grid} == {"english", "simple"}
+    assert DEFAULT_SETTINGS in grid
+    with pytest.raises(ValueError, match="nothing to select"):
+        select_settings({})

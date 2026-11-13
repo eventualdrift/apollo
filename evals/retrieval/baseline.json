@@ -109,8 +109,8 @@
         },
         "fact_001": {
           "failures": [
-            "uni not retrieved",
-            "substantive_support False, expected True"
+            "substantive_support False, expected True",
+            "uni not retrieved"
           ],
           "reason": "As comm_002."
         },
