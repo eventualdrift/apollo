@@ -10,6 +10,54 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): backup and restore — step 15 is built, and one restore performed
+
+The entries below are unchanged. PRs #26 (proposals), #27 (replay) and #28 (failure behaviour)
+are merged. Codex reached its usage limit during #26; #27 and #28 had no Codex review and were
+self-reviewed, which each PR says.
+
+**What §K.8 asks, and how each part is now held:**
+- **A retained backup is encrypted.** `apollo backup dump` writes a `pg_dump` archive to a pipe
+  and refuses a regular file or a terminal. Apollo chooses no encryption tool and sees no key.
+- **A restore has been performed and verified.** `apollo backup verify` restores the archive on
+  stdin into a scratch database, and checks: it restores in one transaction; its migrations
+  match by checksum (any it predates are applied); its schema objects equal a fresh install's;
+  and every recorded model call replays (`replay_all`). Then it drops the scratch database.
+- **Backups expire.** `apollo backup prune DIR` destroys those older than
+  `backup_retention_days` (`apollo.toml`, default 30), by the time in the file name, and exits 1
+  on a plaintext dump.
+- Connection details reach `pg_dump` and `pg_restore` through `PG*` environment variables,
+  never a command line.
+- `apollo turn replay --all` prints the replay counts for a whole database.
+
+**The first restore (O.1/30):** performed 2026-11-13 with the documented commands, on a scratch
+deployment on `brain.fake`. Recorded in
+[`operations/backup-restore.md`](operations/backup-restore.md): the dump was encrypted with
+`age` before it was written anywhere, the restore verified, a real restore into a new database
+then ran as `apollo_app`, and every artefact was destroyed. **Not yet done:** the same on
+Janu's deployment, which does not exist yet.
+
+**Decisions made here (Claude):**
+- **Commands rather than a script.** §K.8 says the deliverable is a performed restore, "not a
+  backup script". The commands exist so the restore test is one line Janu can rerun, and so the
+  encryption rule is a mechanism. They are thin: `pg_dump`, `pg_restore`, and the checks.
+- **Roles and grants are left out of the archive** (`--no-owner --no-privileges`). They belong
+  to the server, and `apollo provision` recreates them, so a restore never depends on a role
+  that happened to exist where the backup was taken.
+- **Replay verifies what was sent to a model, and only that.** A row no model call used has no
+  recorded hash. For those the evidence is the one-transaction restore, the foreign keys and
+  the row counts. The document says so.
+- **The two PostgreSQL log settings are not in a backup** and must be made again after a real
+  restore. `apollo doctor` reports them.
+- CI now installs `age`, so the restore tests run there instead of skipping.
+
+**Proven:** O.1/30, mechanically and by a performed restore. The tests also hold K.8's two
+boundaries: a backup from before a forget still contains the claim and one from after does not,
+and the older one is past retention after 30 days.
+
+**Remaining work:** step 16, the acceptance record against O.1/1-30 and the runbook for what
+needs a real model; step 17, the product trial (Janu's).
+
 ## Update (2026-11-13): failure behaviour and redaction — step 14 is built
 
 The entries below are unchanged. PR #26 (proposals) is merged; replay is in its own PR.

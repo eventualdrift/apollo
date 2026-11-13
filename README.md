@@ -56,7 +56,11 @@ Honest under failure, auditable end to end. So far:
   tested (see "When something fails" below), and no log line or stored error field carries
   message, memory or provider text.
 
-Still to come: an executed and verified backup and restore.
+- **Backup and restore.** A backup can only be kept encrypted, a restore has been performed and
+  verified, and backups expire (see "Backups" below).
+
+What is left of the technical gate needs a real model. [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md)
+says what, and why.
 
 ## Two database roles
 
@@ -225,8 +229,10 @@ is **logical deletion, not physical erasure**. What it does not reach:
 - **Apollo's replies.** A reply that repeated the claim keeps it.
 - **Retrieval queries.** The text of a query Apollo searched memory with is recorded
   with the turn, and can contain the claim.
-- **PostgreSQL below the rows.** Old row versions until vacuum reclaims them, the write-ahead log,
-  replicas, and any dump or backup taken before the tombstone. Nothing overwrites them.
+- **PostgreSQL below the rows.** Old row versions until vacuum reclaims them, the write-ahead log
+  and replicas. Nothing overwrites them.
+- **Backups taken before the tombstone.** They still hold the claim, until `apollo backup prune`
+  destroys them at the end of the retention window (see "Backups").
 - **A proposal still waiting from some other message.** A pending proposal holds its own copy of
   a claim, in the model's wording. If the memory was not made from that proposal's message,
   Apollo has no way to know the two are the same claim, and leaves the proposal alone.
@@ -288,6 +294,28 @@ it again, and compares both hashes. It reports two statuses per call:
 `replay` exits 1 when a call has a `MISMATCH` or a `SOURCE_MISSING`, and 0 otherwise. It only
 reads: it writes no row and no audit event. `--context` prints conversation and memory text to
 your terminal; nothing else does, and none of it is logged.
+
+## Backups
+
+```sh
+apollo backup dump | age -r "$RECIPIENT" -o "$BACKUP_DIR/$(apollo backup name age)"
+age -d -i apollo-backup.key "$BACKUP_DIR/apollo-....dump.age" | apollo backup verify
+apollo backup prune "$BACKUP_DIR"
+```
+
+- **A backup is only ever a stream.** `apollo backup dump` writes to a pipe and refuses a file,
+  so the only backup you can keep is one that went through an encryption tool first. The tool
+  and the key are yours; Apollo sees neither.
+- **`apollo backup verify` is the restore test.** It restores a backup into a scratch database,
+  checks the schema against a fresh install, replays every recorded model call so that the
+  content verifies itself, and drops the scratch database.
+- **Backups expire.** `apollo backup prune` destroys those older than `backup_retention_days`
+  (default 30).
+- **A backup taken before you forgot something still contains it.** Forgetting removes a claim
+  from the live database at once, and from backups within the retention window.
+
+[`docs/operations/backup-restore.md`](docs/operations/backup-restore.md) has the whole procedure,
+including a real restore, and the record of the first restore that was performed.
 
 ## When something fails
 
