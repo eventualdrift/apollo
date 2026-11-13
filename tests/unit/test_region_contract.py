@@ -28,7 +28,12 @@ from apollo.brains.base import (
 )
 from apollo.context.budget import Budget
 from apollo.context.bundle import Purpose, Region
-from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
+from apollo.context.compiler import (
+    CompileRequest,
+    HistoryMessage,
+    RetrievalInput,
+    compile_context,
+)
 from apollo.context.escaping import escape
 from apollo.context.estimator import CONSERVATIVE
 from apollo.core.identity import compose_identity
@@ -50,6 +55,7 @@ def a_bundle(user_message: str = "What is 2+2?", history=()):
             estimator=CONSERVATIVE,
             identity=compose_identity(REPO / "identity"),
             history=tuple(history),
+            retrieval=RetrievalInput(),
         )
     )
 

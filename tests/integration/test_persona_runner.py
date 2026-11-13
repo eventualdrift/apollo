@@ -209,7 +209,7 @@ def test_every_generation_is_a_recorded_invocation(db, runner_factory, cases) ->
             assert row["purpose"] == "reply"
             assert row["brain_alias"] == "brain.default"
             assert row["adapter_key"] == "fake"
-            assert row["render_version"] == "chat-v2"
+            assert row["render_version"] == "chat-v3"
             assert row["context_bundle_hash"]
             assert row["has_manifest"]
             assert row["token_estimator"] == "conservative-v1"
@@ -475,6 +475,107 @@ def test_no_personal_conversation_content_enters_a_benchmark_run(
         )
         for row in cur.fetchall():
             assert "SENTINEL-PERSONAL" not in row["content"]
+
+
+# -- retrieval in an eval turn (spec E.2, J, K.2) ----------------------------
+
+
+def _remember(db, clock, content: str, *, origin):  # type: ignore[no-untyped-def]
+    from apollo.memory import lifecycle
+    from apollo.memory.models import Kind, OriginTier, Scope, SourceKind
+    from apollo.storage.unit_of_work import unit_of_work
+
+    with unit_of_work(db, expect_audit=False) as uow:
+        return lifecycle.create(
+            uow, scope=Scope.USER, kind=Kind.FACT, subject="orm", content=content,
+            origin_tier=OriginTier.USER_ASSERTED, origin=origin, pinned=True,
+            source_kind=SourceKind.USER_DIRECT_ENTRY, now=clock(),
+        ).memory_id
+
+
+def test_no_personal_memory_enters_a_benchmark_run(db, runner_factory, cases, clock) -> None:
+    """O.1/20, the third mechanism: even pinned, and even matching the question."""
+    from apollo.memory.models import Origin
+
+    _remember(db, clock, "SENTINEL-PERSONAL-MEMORY: Janu wrote his own ORM once.",
+              origin=Origin.PERSONAL)
+    brain = _Recording()
+    record = runner_factory(brain=brain).run(cases, brain_alias="brain.default")
+
+    assert brain.sent and all("SENTINEL-PERSONAL-MEMORY" not in text for text in brain.sent)
+    assert all("<<<MEMORY " not in text for text in brain.sent)
+    assert "SENTINEL-PERSONAL-MEMORY" not in json.dumps(record.cases)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT i.context_manifest FROM model_invocation i JOIN turn t ON t.id = i.turn_id"
+            " WHERE t.conversation_id = %s", (record.conversation_id,),
+        )
+        for row in cur.fetchall():
+            assert not [e for e in row["context_manifest"] if e["block_type"] == "MEMORY"]
+
+
+def test_an_eval_turn_searches_and_records_like_any_turn(db, runner_factory, cases) -> None:
+    """The fixture store is empty, and the run says so from a real, recorded search."""
+    brain = _Recording()
+    record = runner_factory(brain=brain).run(cases, brain_alias="brain.default")
+    assert all("Substantive matches: 0" in text for text in brain.sent)
+    # The previous fixture user message is searched with, as in a conversation.
+    assert any('Memory searched: "Worth writing my own ORM? I really think' in text
+               for text in brain.sent)
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT t.id, count(r.id) AS strategies, bool_or(r.substantive) AS substantive"
+            "  FROM turn t LEFT JOIN turn_retrieval r ON r.turn_id = t.id"
+            " WHERE t.conversation_id = %s GROUP BY t.id", (record.conversation_id,),
+        )
+        turns = cur.fetchall()
+    assert len(turns) == MANUAL_SAMPLES + 1
+    assert all(t["strategies"] == 3 and t["substantive"] is False for t in turns)
+
+
+def test_a_stray_fixture_memory_stops_the_run_before_any_generation(
+    db, runner_factory, cases, clock
+) -> None:
+    """It would give this run a bundle no other run of the corpus has."""
+    from apollo.evals.runner import PersonaRunError
+    from apollo.memory.models import Origin
+
+    _remember(db, clock, "A fixture memory nobody declared.", origin=Origin.FIXTURE)
+    brain = _Recording()
+    with pytest.raises(PersonaRunError, match="fixture memories this case does not declare"):
+        runner_factory(brain=brain).run(cases, brain_alias="brain.default")
+    assert brain.sent == []
+
+
+def test_a_run_compiles_what_the_run_record_alone_can_rebuild(
+    db, runner_factory, cases, clock
+) -> None:
+    """Gate 2 rebuilds bundles with no database: the real search must agree with it."""
+    from apollo.core.identity import compose_identity
+    from apollo.evals.runner import compile_case_bundle
+
+    record = runner_factory().run(cases, brain_alias="brain.default")
+    identity = compose_identity(make_config(db._dsn).identity_dir)
+    settings = record.context_settings
+    provider = type("P", (), {"context_budget": settings["context_budget"],
+                              "reserved_output": settings["reserved_output"]})()
+    for case, entry in zip(cases, record.cases, strict=True):
+        rebuilt = compile_case_bundle(
+            case, identity=identity, provider=provider, max_context=settings["max_context"],
+            identity_cap=settings["identity_cap"], now=record.started_at,
+        )
+        assert entry["bundle_hashes_seen"] == [rebuilt.bundle_hash], case.id
+    assert record.compiler_version == "compiler-v2"
+
+
+class _Recording(FakeBrain):
+    def __init__(self) -> None:
+        super().__init__(key="fake")
+        self.sent: list[str] = []
+
+    def generate(self, req: RenderedRequest, params: GenerationParams) -> Generation:
+        self.sent.append(req.messages[-1].content)
+        return super().generate(req, params)
 
 
 # -- recordings from a real run --------------------------------------------

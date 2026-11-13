@@ -25,7 +25,16 @@ from apollo.storage.unit_of_work import UnitOfWork
 TEXT_SEARCH_CONFIGS = ("english", "simple")
 STORED_CONFIG = "english"
 
-_COLUMNS = "m.id, m.subject, m.content, m.created_at"
+#: The claim, plus what its provenance header and confidence are derived from
+#: (spec B.4, D.8): where it came from, when, and its observations by relation.
+_COLUMNS = (
+    "m.id, m.subject, m.content, m.scope, m.origin_tier, m.pinned, m.created_at,"
+    " (SELECT count(*) FROM memory_observation o WHERE o.memory_id = m.id) AS observations,"
+    " (SELECT count(*) FROM memory_observation o"
+    "   WHERE o.memory_id = m.id AND o.relation = 'confirms') AS confirms,"
+    " (SELECT count(*) FROM memory_observation o"
+    "   WHERE o.memory_id = m.id AND o.relation = 'contradicts') AS contradicts"
+)
 
 _LEXICAL_STORED = (
     f"SELECT {_COLUMNS}, ts_rank_cd(m.search_vector, q.query, 32) AS score"

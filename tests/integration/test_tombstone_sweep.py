@@ -15,11 +15,19 @@ and the redacted bundle hash are looked for in:
 * a brain.fake persona run record written after the tombstone;
 * the reply bundle rendered after the tombstone, as the brain received it.
 
-The one place the sentinel may remain is the source message's own content:
-deletion in phase zero is logical, and a tombstone removes the claim, not the
-conversation it came from (README, "Deleting a memory"). The reply bundle is
-rendered in a new conversation, since the source conversation's history
-legitimately still holds that message.
+Before the tombstone, two real turns retrieve the memory, one for each
+version of the chain, so the claim really is rendered to the brain inside a
+MEMORY fence and recorded in two real manifests. Those invocations' hashes
+must be redacted with the rest (O.1/19).
+
+The sentinel may remain in exactly two places, both of them the user's own
+words rather than Apollo's memory of them: the source message's content, and
+the query text recorded for that message's turn, which is the same message as
+it was searched with (spec C.5). Deletion in phase zero is logical, and a
+tombstone removes the claim, not the conversation it came from (README,
+"Deleting a memory"). The reply bundle after the tombstone is rendered in a
+new conversation, since the source conversation's history legitimately still
+holds that message.
 """
 
 from __future__ import annotations
@@ -194,8 +202,12 @@ def test_after_a_tombstone_the_claim_survives_only_in_its_source_message(
                 " 'user_message', %s, %s, now(), now())",
                 (uuid.uuid4(), old, source_message, f"the door code is {SENTINEL}"),
             )
+        # A real turn retrieves the first version: the claim reaches the brain
+        # in a MEMORY fence, and the invocation's manifest includes it.
+        first_ask = _ask_about_the_door(db, service_factory, clock, expect_memory=old)
         new = uuid.UUID(cli("correct", str(old), stdin=f"it is {SENTINEL}, still\n").strip())
         cli("confirm", str(new))
+        second_ask = _ask_about_the_door(db, service_factory, clock, expect_memory=new)
         invocation = _invocation_including(db, [old, new], clock)
 
         # Before the tombstone the sweep finds the claim where it lives, tsvector included.
@@ -239,14 +251,32 @@ def test_after_a_tombstone_the_claim_survives_only_in_its_source_message(
     finally:
         logging.getLogger().handlers.clear()
 
-    # The database: only the source message still holds the claim.
-    assert _sweep(owner_db, SENTINEL) == {("message", "content", str(source_message))}
-    assert _sweep(owner_db, REDACTED_HASH) == set()
+    # The database: the claim survives only as the user's own words. That is
+    # the source message, and the query that message's turn searched with.
     with db.connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT hashes_redacted_reason FROM model_invocation WHERE id = %s", (invocation,)
+            "SELECT r.id FROM turn_retrieval r JOIN turn t ON t.id = r.turn_id"
+            " WHERE t.request_message_id = %s AND r.query_text IS NOT NULL",
+            (source_message,),
         )
-        assert cur.fetchone()["hashes_redacted_reason"] == "source_tombstoned"
+        [source_query] = [row["id"] for row in cur.fetchall()]
+    assert _sweep(owner_db, SENTINEL) == {
+        ("message", "content", str(source_message)),
+        ("turn_retrieval", "query_text", str(source_query)),
+    }
+    assert _sweep(owner_db, REDACTED_HASH) == set()
+    with db.connect() as conn, conn.cursor() as cur:
+        # The hand-built invocation, and both real ones (O.1/19).
+        cur.execute(
+            "SELECT id, context_bundle_hash, rendered_prompt_hash, hashes_redacted_reason"
+            " FROM model_invocation WHERE id = ANY(%s)",
+            ([invocation, first_ask, second_ask],),
+        )
+        redacted = cur.fetchall()
+    assert len(redacted) == 3
+    for row in redacted:
+        assert row["hashes_redacted_reason"] == "source_tombstoned", row["id"]
+        assert row["context_bundle_hash"] is None and row["rendered_prompt_hash"] is None
 
     # Everything else Apollo wrote or printed.
     logs = stream.getvalue()
@@ -263,8 +293,33 @@ def test_after_a_tombstone_the_claim_survives_only_in_its_source_message(
     assert "context.compiled" in logs  # the log sink really was captured
 
 
+def _ask_about_the_door(
+    db: Database, service_factory: Any, clock: Any, *, expect_memory: uuid.UUID
+) -> uuid.UUID:
+    """A real turn, in its own conversation, that retrieves the memory. Its invocation id."""
+    brain = RecordingBrain()
+    result = service_factory(brain=brain).submit(
+        conversation_id=create_conversation(db, now=clock()), text="What is the door code?"
+    )
+    assert result.status == "completed"
+    [request] = brain.requests
+    sent = request.messages[-1].content
+    assert f"<<<MEMORY tier=T3 ref=memory:{expect_memory} " in sent
+    assert SENTINEL in sent  # before the tombstone, the claim is legitimately in context
+    [invocation_id] = result.invocation_ids
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT context_manifest FROM model_invocation WHERE id = %s",
+                    (invocation_id,))
+        manifest = cur.fetchone()["context_manifest"]
+    assert [e["source_ref"] for e in manifest if e["block_type"] == "MEMORY"] == [
+        str(expect_memory)
+    ]
+    assert SENTINEL not in json.dumps(manifest)  # references and metadata, never content
+    return invocation_id
+
+
 def _invocation_including(db: Database, memory_ids: list[uuid.UUID], clock: Any) -> uuid.UUID:
-    """A completed invocation whose manifest included the memories (step 11 will make these)."""
+    """A completed invocation whose manifest included both versions at once (hand-built)."""
     now = clock()
     conversation_id, message_id, turn_id, invocation_id = (uuid.uuid4() for _ in range(4))
     manifest = [entry for m in memory_ids for entry in included_manifest_entry(m)]

@@ -6,7 +6,8 @@ The shape of an ordinary successful turn:
         -> message + turn persisted atomically          (T1)
         -> identity loaded
         -> policy check
-        -> context bundle compiled
+        -> memory searched (a failed search is stated, and does not fail the turn)
+        -> context bundle compiled; what was searched and found is recorded
         -> model_invocation(status=started) committed   (Ta)
         -> brain invoked, with no transaction open
         -> invocation completed                         (Tb)
@@ -36,12 +37,14 @@ from apollo.context.compiler import CompileRequest, HistoryMessage, compile_cont
 from apollo.core import invocations
 from apollo.core.identity import IdentityLoader, snapshot_identity
 from apollo.core.policy import SURFACE_INTERACTIVE, check_brain_permitted
+from apollo.core.retrieval import compile_input, record_for_turn, retrieve_for_turn
 from apollo.errors import (
     ApolloError,
     BrainRejectedError,
     BrainTransportError,
     ErrorKind,
     FinalisationConflictError,
+    InvocationRefusedError,
     PolicyRefusedError,
     TransportReason,
 )
@@ -344,6 +347,22 @@ class TurnService:
             )
             brain = self._registry.get(self._brain_alias)
             capabilities = brain.capabilities()
+            history = self._history(conversation_id, before_seq=message["seq"])
+        except PolicyRefusedError as exc:
+            self._record_policy_refusal(conversation_id, turn_id, exc)
+            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
+        except ApolloError as exc:
+            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
+
+        # Retrieval (spec A.2 step 5). A failed search does not fail the turn:
+        # the bundle says the search failed, never that nothing was found.
+        found = retrieve_for_turn(
+            self._db,
+            current=text,
+            previous=_previous_user_message(history),
+            conversation_mode=conversation["mode"],
+        )
+        try:
             bundle = compile_context(
                 CompileRequest(
                     purpose=Purpose.REPLY,
@@ -358,22 +377,29 @@ class TurnService:
                     ),
                     estimator=capabilities.estimator,
                     identity=identity,
-                    history=self._history(conversation_id, before_seq=message["seq"]),
+                    history=history,
+                    retrieval=compile_input(found, now=now),
                 )
             )
-        except PolicyRefusedError as exc:
-            self._record_policy_refusal(conversation_id, turn_id, exc)
-            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
         except ApolloError as exc:
+            # What was searched is recorded even though nothing was sent.
+            record_for_turn(self._db, turn_id=turn_id, found=found, bundle=None, now=now)
             return self._fail_turn(conversation_id, turn_id, exc, turn_started)
+        record_for_turn(self._db, turn_id=turn_id, found=found, bundle=bundle, now=now)
 
-        outcome, attempts = self._generate_with_retry(
-            conversation_id=conversation_id,
-            turn_id=turn_id,
-            brain=brain,
-            provider_key=provider.key,
-            bundle=bundle,
-        )
+        try:
+            outcome, attempts = self._generate_with_retry(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                brain=brain,
+                provider_key=provider.key,
+                bundle=bundle,
+            )
+        except InvocationRefusedError as exc:
+            # A memory in the bundle was forgotten between the search and the
+            # call. The database refuses to record an invocation that includes
+            # it, so nothing was sent; the turn fails rather than hangs.
+            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
 
         if not outcome.ok:
             assert outcome.error is not None
@@ -675,3 +701,11 @@ class TurnService:
             HistoryMessage(message_id=str(r["id"]), role=r["role"], content=r["content"])
             for r in rows
         )
+
+
+def _previous_user_message(history: tuple[HistoryMessage, ...]) -> str | None:
+    """Janu's last message before this one, in this conversation (spec E.3)."""
+    for item in reversed(history):
+        if item.role == "user":
+            return item.content
+    return None

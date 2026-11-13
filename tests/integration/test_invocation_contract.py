@@ -10,7 +10,7 @@ from apollo.brains.base import GenerationParams
 from apollo.brains.fake import FakeBrain
 from apollo.context.budget import Budget
 from apollo.context.bundle import Purpose
-from apollo.context.compiler import CompileRequest, compile_context
+from apollo.context.compiler import CompileRequest, RetrievalInput, compile_context
 from apollo.context.estimator import CONSERVATIVE
 from apollo.core import invocations
 from apollo.core.conversations import create_conversation
@@ -32,6 +32,7 @@ def a_bundle():
             budget=Budget(total=8000, identity_cap=4000),
             estimator=CONSERVATIVE,
             identity=compose_identity(REPO / "identity"),
+            retrieval=RetrievalInput(),
         )
     )
 

@@ -1,17 +1,22 @@
-"""chat-v2 against chat-v1: the evidence spec J.5 asks of a render_version change.
+"""Render versions against each other: the evidence spec J.5 asks of a render_version change.
 
-J.5 requires the persona suite for a render_version change. chat-v2 differs
-from chat-v1 only when history has consecutive same-role messages, which no
-persona corpus case has. So every corpus case renders byte-identically under
-both, and a persona-suite rerun would send the models exactly the bytes the
-M2 runs sent. This test is that evidence; the replay half of J.5 is deferred
-to step 13, which builds replay (docs/PROJECT_STATE.md).
+J.5 requires the persona suite for a render_version change.
 
-Until replay exists, chat-v1 is guarded directly. Invocations recorded before
-the bump carry `render_version = chat-v1`, and replay will reproduce them by
-selecting that renderer, so chat-v1's bytes must never move. The pinned hashes
-below are what the renderer before chat-v2 produced for failed-turn histories,
-the one case where the two versions differ.
+- chat-v2 differs from chat-v1 only when history has consecutive same-role
+  messages, which no persona corpus case has. So every corpus case renders
+  byte-identically under both, and a persona-suite rerun would send the models
+  exactly the bytes the M2 runs sent.
+- chat-v3 differs from chat-v2 only when a block carries provenance
+  attributes, which only a MEMORY block does. No persona corpus case has a
+  memory, so every case renders byte-identically under both. (The compiler
+  changed in the same step, and that does call for a persona run: see
+  docs/PROJECT_STATE.md.)
+
+Older versions are guarded directly. Invocations record the version they were
+rendered with, and replay reproduces them by selecting that renderer, so its
+bytes must never move. The pinned hashes below are what the renderer before
+chat-v2 produced for failed-turn histories, the one case where those two
+differ.
 """
 
 from __future__ import annotations
@@ -31,8 +36,15 @@ from apollo.brains.base import (
 from apollo.config import MODE_BENCHMARK, ProviderConfig
 from apollo.context.budget import Budget
 from apollo.context.bundle import Purpose
-from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
+from apollo.context.compiler import (
+    CompileRequest,
+    HistoryMessage,
+    MemoryItem,
+    RetrievalInput,
+    compile_context,
+)
 from apollo.context.estimator import CONSERVATIVE
+from apollo.context.rules import COMPILER_V1
 from apollo.core.identity import Identity, compose_identity
 from apollo.evals.loader import load_cases
 from apollo.evals.runner import compile_case_bundle
@@ -41,9 +53,9 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 9, 28, tzinfo=UTC)
 
 
-def test_the_default_is_chat_v2_and_chat_v1_stays_available() -> None:
-    assert CHAT_RENDER_VERSION == "chat-v2"
-    assert CHAT_RENDER_VERSIONS == ("chat-v1", "chat-v2")
+def test_the_default_is_chat_v3_and_the_older_versions_stay_available() -> None:
+    assert CHAT_RENDER_VERSION == "chat-v3"
+    assert CHAT_RENDER_VERSIONS == ("chat-v1", "chat-v2", "chat-v3")
 
 
 @pytest.mark.parametrize("max_context", [9216, 16384])
@@ -56,12 +68,76 @@ def test_every_persona_case_renders_identically_under_chat_v1_and_chat_v2(
     provider = ProviderConfig(key="p", kind="fake", allowed_modes=(MODE_BENCHMARK,),
                               eval_only=True, context_budget=8000, reserved_output=1024)
     for case in cases:
+        # As the M2 runs compiled them: that is what the chat-v2 evidence is about.
         bundle = compile_case_bundle(case, identity=identity, provider=provider,
-                                     max_context=max_context, identity_cap=4000, now=NOW)
+                                     max_context=max_context, identity_cap=4000, now=NOW,
+                                     compiler_version=COMPILER_V1)
         v1 = render_chat(bundle, render_version="chat-v1")
         v2 = render_chat(bundle, render_version="chat-v2")
         assert v1.messages == v2.messages, case.id
         assert v1.prompt_hash == v2.prompt_hash, case.id
+
+
+@pytest.mark.parametrize("max_context", [9216, 16384])
+@pytest.mark.parametrize("compiler_version", ["compiler-v1", "compiler-v2"])
+def test_every_persona_case_renders_identically_under_chat_v2_and_chat_v3(
+    max_context: int, compiler_version: str,
+) -> None:
+    """No corpus case carries a memory, so chat-v3's headers change none of them."""
+    identity = compose_identity(REPO / "identity")
+    provider = ProviderConfig(key="p", kind="fake", allowed_modes=(MODE_BENCHMARK,),
+                              eval_only=True, context_budget=8000, reserved_output=1024)
+    for case in load_cases(REPO / "evals/persona/cases"):
+        bundle = compile_case_bundle(case, identity=identity, provider=provider,
+                                     max_context=max_context, identity_cap=4000, now=NOW,
+                                     compiler_version=compiler_version)
+        assert not any(block.attributes for block in bundle.blocks), case.id
+        v2 = render_chat(bundle, render_version="chat-v2")
+        v3 = render_chat(bundle, render_version="chat-v3")
+        assert (v2.messages, v2.prompt_hash) == (v3.messages, v3.prompt_hash), case.id
+
+
+MEMORY_ID = __import__("uuid").UUID("018f2c00-0000-7000-8000-000000000001")
+ATTRIBUTES = (("scope", "relationship"), ("origin", "user_asserted"), ("support", "confirmed"),
+              ("confidence", "0.80"), ("obs", "3"), ("age", "41d"), ("match", "lexical"))
+
+
+def _memory_bundle():  # type: ignore[no-untyped-def]
+    return compile_context(CompileRequest(
+        purpose=Purpose.REPLY, user_message="Recap first, or just answer?",
+        user_message_ref="m1", now=NOW, budget=Budget(total=8000, identity_cap=4000),
+        estimator=CONSERVATIVE, identity=compose_identity(REPO / "identity"),
+        retrieval=RetrievalInput(
+            memories=(MemoryItem(
+                memory_id=MEMORY_ID, pinned=False, substantive=True, attributes=ATTRIBUTES,
+                content="Janu prefers Apollo not to restate his question before answering.",
+            ),),
+            query_text="Recap first, or just answer?", lexical_matches=1, substantive_matches=1,
+        ),
+    ))
+
+
+def test_chat_v3_writes_a_memorys_provenance_into_its_fence_header() -> None:
+    """Spec B.4: tier, ref, scope, origin, support, observations and age, in the header."""
+    bundle = _memory_bundle()
+    final = render_chat(bundle).messages[-1].content
+    assert (
+        f"<<<MEMORY tier=T3 ref=memory:{MEMORY_ID} scope=relationship origin=user_asserted"
+        " support=confirmed confidence=0.80 obs=3 age=41d match=lexical>>>\n"
+        "Janu prefers Apollo not to restate his question before answering.\n"
+        "<<<END MEMORY>>>"
+    ) in final
+    assert final.endswith("Recap first, or just answer?")
+
+
+def test_chat_v2_renders_the_same_bundle_without_the_attributes() -> None:
+    """The versions differ in the header and nowhere else."""
+    bundle = _memory_bundle()
+    v2 = render_chat(bundle, render_version="chat-v2").messages[-1].content
+    v3 = render_chat(bundle, render_version="chat-v3").messages[-1].content
+    header = "".join(f" {key}={value}" for key, value in ATTRIBUTES)
+    assert f"<<<MEMORY tier=T3 ref=memory:{MEMORY_ID}>>>" in v2
+    assert v3.replace(header, "") == v2
 
 
 def _failed_turn_bundle():  # type: ignore[no-untyped-def]
@@ -72,6 +148,7 @@ def _failed_turn_bundle():  # type: ignore[no-untyped-def]
         history=(HistoryMessage("m1", "user", "question"),
                  HistoryMessage("m2", "apollo", "answer"),
                  HistoryMessage("m2b", "user", "unanswered: that turn failed")),
+        retrieval=RetrievalInput(),
     ))
 
 
@@ -92,7 +169,7 @@ def test_an_adapter_renders_with_the_version_it_declares() -> None:
         render_version = "chat-v1"
 
     bundle = _failed_turn_bundle()
-    assert FakeBrain().render(bundle) == render_chat(bundle, render_version="chat-v2")
+    assert FakeBrain().render(bundle) == render_chat(bundle, render_version="chat-v3")
     assert ChatV1Brain().render(bundle) == render_chat(bundle, render_version="chat-v1")
 
 
@@ -138,10 +215,12 @@ def test_chat_v1_still_renders_failed_turn_history_byte_for_byte(name: str) -> N
         purpose=Purpose.REPLY, user_message="Try again?", user_message_ref="mreq", now=NOW,
         budget=Budget(total=8000, identity_cap=4000), estimator=CONSERVATIVE,
         identity=_FIXED_IDENTITY, history=history,
+        # The pins are bundles of the compiler that recorded them.
+        compiler_version=COMPILER_V1,
     ))
-    # If this fails, the compiler moved, not the renderer: that is a
-    # compiler_version change, and these pins are regenerated with it.
-    assert bundle.bundle_hash == bundle_hash, "the bundle moved: a compiler change"
+    # If this fails, compiler-v1 moved, not the renderer. Its output is what
+    # replay rebuilds old invocations from: restore it; never re-pin it.
+    assert bundle.bundle_hash == bundle_hash, "compiler-v1's output moved"
     # If this fails, chat-v1 moved: every invocation recorded before chat-v2
     # would no longer reproduce. Restore chat-v1; never re-pin it.
     assert render_chat(bundle, render_version="chat-v1").prompt_hash == v1_prompt_hash

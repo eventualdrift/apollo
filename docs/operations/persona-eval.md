@@ -47,6 +47,26 @@ headers, personal memory, or personal conversation history. That is asserted wit
 Manual cases run three times (`N=3`). They are recorded for a human to read and are never graded
 automatically — there is no LLM judge anywhere in this system.
 
+### Retrieval in a run
+
+Every eval turn searches memory for real and records the search, exactly as a conversation does.
+It is a benchmark conversation, so the search sees only `origin = fixture` memories and can never
+see a personal one (spec E.2, K.2). No corpus case declares a memory yet, so each case's bundle
+states an empty search: `Substantive matches: 0`.
+
+The run refuses to start a case if the database's fixture scope holds a memory the case does not
+declare, or if the search fails. Either would give that run a bundle no other run of the corpus
+has, and the comparison across brains would stop being one. Run the suite against a database with
+no fixture memories in it.
+
+### Compiler and render versions
+
+Runs record `compiler-v2` and `chat-v3` from step 11 on. The M2 runs were compiled by
+`compiler-v1`, so Gate 2 now reports them as a stale compiler version: they remain evidence of
+what they measured, and are not comparable with a new run. Spec J.5 asks for the persona suite on
+a compiler version change. That run needs a real model and has not been made; see
+[`../PROJECT_STATE.md`](../PROJECT_STATE.md).
+
 ## Comparing runs
 
 ```sh

@@ -10,6 +10,71 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): memory reaches the reply — step 11 is built; its model run is not
+
+The entries below are unchanged. With this, every part of step 11 that does not need a model is
+done: retrieval, its eval, the recorded choice of floor and configuration, and memory in the
+reply bundle.
+
+**What a reply bundle is now (`compiler-v2`, rendered by `chat-v3`):**
+- `IDENTITY`, `CONTEXT_RULES`, one `MEMORY` block per retrieved memory (pinned first, then by
+  rank), `RETRIEVAL_NOTICE`, this conversation's history, the request (§F.2).
+- A `MEMORY` fence header carries the block's provenance (§B.4):
+  `tier ref scope origin support confidence obs age match`.
+  - `match` is how it was found: `pinned`, `lexical` or `recency`.
+  - The same facts are in the manifest entry, so replay does not have to re-derive them.
+- `RETRIEVAL_NOTICE` is on every turn (§E.3, §F.3). With no substantive support it is the spec's
+  own text, `Substantive matches: 0` included. Recent memories are still handed over, each
+  labelled `match=recency`.
+- **A failed search does not fail the turn (§L).** The bundle carries one `RETRIEVAL_ERROR`
+  notice in place of memories and the notice, and it is never worded as "nothing found". No
+  `turn_retrieval` rows are written for it; its record is the manifest entry.
+- The memory budget is 25% of the context budget, pinned first (§F.5). A memory that did not fit
+  is in the manifest with `drop_reason: budget:memory_cap`, `included_in_context = false` in the
+  retrieval record, and counted in the notice as not shown.
+- `turn_retrieval` and `turn_retrieval_result` are written for every turn, eval turns included.
+
+**Versions.** Old versions stay buildable, byte for byte, because replay rebuilds an invocation
+with the builder and renderer it recorded (§H.4):
+- `compiler-v1` (M1, M2): no memory, a fixed notice. Its texts are pinned by tests. The concluded
+  retrieval-notice ablation stays frozen to it.
+- `chat-v2`: for a bundle whose blocks carry no provenance attributes, `chat-v3` is
+  byte-identical to it. A test renders all 30 persona cases under both, at both M2 context sizes.
+
+**Readings of the spec made here (Claude; each is the spec's own text, not a change to it):**
+- **Confidence is in the header and breaks ranking ties.** §D.8 and ADR-0005 say derived
+  confidence "is displayed in context and used as a ranking tiebreaker". §E.3 and §F.4 break ties
+  by `memory_id`. Both now hold: equal scores are ordered by confidence, then by `memory_id`.
+  The retrieval suite's results are unchanged, since every fixture memory has the same confidence.
+- **The block body is the memory's `content` only**, as in the §B.4 example. The subject is a
+  classification label and is not rendered.
+- **`match` is an addition to the §B.4 header.** Without it the model cannot tell a matched
+  memory from one that is merely recent once both are present.
+- **The policy region grew.** `CONTEXT_RULES` gained two short paragraphs on reading a memory's
+  header and the two notices. By the conservative estimate the policy region is 3802 tokens
+  against the 4000 cap (`identity_token_cap`); it was 3587.
+- **The proposal rules ask for four labelled lines** (scope, kind, subject, content), ready for
+  step 12. No proposal invocation was ever made under the earlier text.
+
+**Proven on `brain.fake` (mechanical):** O.1/2, O.1/8, O.1/19 on real invocations, O.1/20 (third
+mechanism, at turn level), O.1/23 for a memory, and the manifest and rendering halves of O.1/4
+and O.1/7.
+
+**Not yet proven, and why:**
+- **Spec J.5 requires the persona suite for a compiler version change, on a real model.** No
+  model endpoint is reachable from the cloud session, so no such run exists for `compiler-v2`.
+  Until one does, `compiler-v2`'s effect on Apollo's behaviour is unmeasured. The M2 runs were
+  `compiler-v1` and are not comparable.
+- The behavioural halves of O.1/4 (does not answer "bananas") and O.1/7 (the fabricated-memory
+  case passes) need the same run.
+
+**A memory forgotten mid-turn.** If a memory is tombstoned between the search and the call, the
+database refuses the invocation (migration `0004`), nothing is sent, and the turn fails with the
+internal-error note rather than staying `started`.
+
+**Persona runs** search the fixture scope for real and refuse a case if that scope holds a
+memory the case does not declare. No corpus case declares one yet.
+
 ## Update (2026-11-13): the floor and the text-search configuration are chosen (§E.4)
 
 Janu asked for the remaining work to be finished without a stop at each step (2026-11-13). The

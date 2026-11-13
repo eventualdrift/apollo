@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
+from apollo.memory.models import ObservationCounts, OriginTier, Scope, Support
 from apollo.memory.retrieval import (
     LEXICAL,
     PINNED,
@@ -14,6 +16,7 @@ from apollo.memory.retrieval import (
     merge,
     substantive_support,
 )
+from apollo.memory.retrieval.base import Provenance
 from apollo.memory.retrieval.lexical import any_word_query
 
 
@@ -21,8 +24,16 @@ def _id(n: int) -> uuid.UUID:
     return uuid.UUID(int=n)
 
 
+def _provenance(confirms: int = 0, contradicts: int = 0) -> Provenance:
+    return Provenance(
+        scope=Scope.USER, origin_tier=OriginTier.USER_ASSERTED,
+        created_at=datetime(2026, 11, 1, tzinfo=UTC), observations=1 + confirms + contradicts,
+        counts=ObservationCounts(confirms, contradicts),
+    )
+
+
 def _result(strategy: str, *scored: tuple[int, float]) -> StrategyResult:
-    hits = tuple(Hit(_id(n), score, "s", f"memory {n}") for n, score in scored)
+    hits = tuple(Hit(_id(n), score, "s", f"memory {n}", _provenance()) for n, score in scored)
     return StrategyResult(strategy, None, hits, strategy != RECENCY and bool(hits), 0)
 
 
@@ -103,3 +114,31 @@ def test_the_current_question_is_searched_first() -> None:
 
     query = RetrievalQuery(current="bicycle colour", previous="a b c d", origin=Origin.PERSONAL)
     assert query_terms(query, 3) == "bicycle or colour or a"
+
+
+def test_equal_scores_are_ordered_by_confidence_before_memory_id() -> None:
+    """Spec D.8, ADR-0005: derived confidence is the ranking tiebreaker."""
+    def hit(n: int, **counts: int) -> Hit:
+        return Hit(_id(n), 0.5, "s", f"memory {n}", _provenance(**counts))
+
+    merged = merge((
+        StrategyResult(LEXICAL, "q", (hit(1), hit(2, confirms=2), hit(3, contradicts=1)), True, 0),
+    ), RetrievalSettings())
+    # All three normalise to 1.0. Confirmed (0.80) leads, asserted (0.70) next,
+    # contested (0.45) last; the older id no longer wins by default.
+    assert [m.memory_id for m in merged] == [_id(2), _id(1), _id(3)]
+    assert [m.provenance.support for m in merged] == [
+        Support.CONFIRMED, Support.ASSERTED, Support.CONTESTED,
+    ]
+    assert [m.provenance.confidence for m in merged] == [0.8, 0.7, 0.45]
+
+
+def test_a_memory_is_labelled_by_the_strongest_way_it_was_found() -> None:
+    merged = merge((
+        _result(PINNED, (1, 1.0)),
+        _result(LEXICAL, (1, 0.4), (2, 0.2)),
+        _result(RECENCY, (2, 1.0), (3, 0.5)),
+    ), RetrievalSettings())
+    assert [(m.memory_id, m.match, m.substantive) for m in merged] == [
+        (_id(1), PINNED, True), (_id(2), LEXICAL, True), (_id(3), RECENCY, False),
+    ]

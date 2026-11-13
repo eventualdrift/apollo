@@ -45,10 +45,10 @@ from apollo.context.bundle import (
     Region,
     compute_bundle_hash,
 )
-from apollo.context.compiler import NO_RETRIEVAL_NOTICE
+from apollo.context.compiler import NO_RETRIEVAL_NOTICE, RetrievalInput
 from apollo.context.escaping import FENCE_CLOSE, FENCE_OPEN
 from apollo.context.estimator import CONSERVATIVE
-from apollo.context.rules import COMPILER_VERSION
+from apollo.context.rules import COMPILER_V1
 from apollo.core.conversations import create_benchmark_conversation
 from apollo.core.identity import Identity, IdentityLoader
 from apollo.core.policy import check_brain_permitted
@@ -246,7 +246,7 @@ def definition() -> dict[str, Any]:
     """The frozen experiment, as data. Its hash binds every plan and record."""
     return {
         "experiment_id": EXPERIMENT_ID,
-        "production_compiler_version": COMPILER_VERSION,
+        "production_compiler_version": COMPILER_V1,
         "candidate_compiler_version": CANDIDATE_COMPILER_VERSION,
         "baseline_notice_sha256": _sha256_text(NO_RETRIEVAL_NOTICE),
         "candidate_notice": CANDIDATE_RETRIEVAL_NOTICE,
@@ -284,7 +284,7 @@ def derive_candidate_bundle(
         raise AblationError(
             f"{EXPERIMENT_ID} is eval-only; refused for conversation mode {conversation_mode!r}"
         )
-    if baseline.compiler_version != COMPILER_VERSION:
+    if baseline.compiler_version != COMPILER_V1:
         raise AblationError("the candidate is derived only from a production compiler-v1 bundle")
     if baseline.dropped:
         raise AblationIsolationError(
@@ -360,6 +360,8 @@ def compile_pair(
         max_context=settings["max_context"],
         identity_cap=settings["identity_cap"],
         now=now,
+        # The experiment is concluded and sealed under the compiler of its day.
+        compiler_version=COMPILER_V1,
     )
     candidate = derive_candidate_bundle(
         baseline, conversation_mode=case.mode, budget=budget_for(model)
@@ -561,8 +563,8 @@ def bind_historical_baseline(model: FrozenModel, artefact: pathlib.Path) -> dict
         raise AblationError(
             f"{model.key}: historical artefact is not run {model.historical_run_id}"
         )
-    if document.get("compiler_version") != COMPILER_VERSION:
-        raise AblationError(f"{model.key}: historical run was not compiled with {COMPILER_VERSION}")
+    if document.get("compiler_version") != COMPILER_V1:
+        raise AblationError(f"{model.key}: historical run was not compiled with {COMPILER_V1}")
     cases = {entry.get("case_id"): entry for entry in document.get("cases", [])}
     bound: dict[str, Any] = {}
     for case_id in CASE_IDS:
@@ -674,7 +676,12 @@ class NoticeAblationRunner(PersonaRunner):
 
     Every generation still goes through `open_invocation` then `invoke` via
     the inherited `_run_sample`: there is no evaluator backdoor.
+
+    Pinned to compiler-v1, the builder the experiment was sealed under: its
+    baseline is that compiler's fixed notice, and it predates retrieval.
     """
+
+    compiler_version = COMPILER_V1
 
     def _compile(
         self,
@@ -683,6 +690,8 @@ class NoticeAblationRunner(PersonaRunner):
         provider: Any,
         max_context: int,
         now: datetime,
+        *,
+        retrieval: RetrievalInput | None = None,
     ) -> ContextBundle:
         baseline = super()._compile(case, identity, provider, max_context, now)
         budget = Budget.for_provider(

@@ -9,10 +9,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from apollo.errors import ApolloError, ErrorKind
-from apollo.memory.models import Origin
+from apollo.memory.models import (
+    ObservationCounts,
+    Origin,
+    OriginTier,
+    Scope,
+    Support,
+    confidence,
+    support,
+)
 from apollo.storage.repositories import RetrievalRepository
 
 PINNED = "pinned"
@@ -22,7 +31,12 @@ STRATEGIES = (PINNED, LEXICAL, RECENCY)
 
 
 class RetrievalError(ApolloError):
-    """Retrieval could not run. The turn fails as `retrieval_failed`, never silently."""
+    """Retrieval could not run.
+
+    The turn continues, and is told so: the bundle carries a RETRIEVAL_ERROR
+    notice in place of memories (spec L). It is never reported as "nothing
+    found".
+    """
 
     kind = ErrorKind.RETRIEVAL_FAILED
 
@@ -76,6 +90,25 @@ class RetrievalQuery:
 
 
 @dataclass(frozen=True)
+class Provenance:
+    """What a memory's fence header and derived confidence are built from (spec B.4, D.8)."""
+
+    scope: Scope
+    origin_tier: OriginTier
+    created_at: datetime
+    observations: int
+    counts: ObservationCounts
+
+    @property
+    def support(self) -> Support:
+        return support(self.counts)
+
+    @property
+    def confidence(self) -> float:
+        return confidence(self.origin_tier, self.counts)
+
+
+@dataclass(frozen=True)
 class Hit:
     """One memory a strategy returned, with that strategy's score in [0, 1]."""
 
@@ -83,10 +116,20 @@ class Hit:
     score: float
     subject: str
     content: str
+    provenance: Provenance
 
     @classmethod
     def from_row(cls, row: dict[str, Any], score: float) -> Hit:
-        return cls(row["id"], score, row["subject"], row["content"])
+        return cls(
+            row["id"], score, row["subject"], row["content"],
+            Provenance(
+                scope=Scope(row["scope"]),
+                origin_tier=OriginTier(row["origin_tier"]),
+                created_at=row["created_at"],
+                observations=row["observations"],
+                counts=ObservationCounts(row["confirms"], row["contradicts"]),
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -109,6 +152,16 @@ class Retrieved:
     strategies: tuple[str, ...]
     subject: str
     content: str
+    provenance: Provenance
+
+    @property
+    def match(self) -> str:
+        """The strongest way it was found: pinned, else lexical, else recency."""
+        return next(s for s in STRATEGIES if s in self.strategies)
+
+    @property
+    def substantive(self) -> bool:
+        return self.match != RECENCY
 
 
 @dataclass(frozen=True)

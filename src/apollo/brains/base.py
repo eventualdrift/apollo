@@ -100,12 +100,18 @@ class Brain(Protocol):
 
 #: Bumped whenever the transformation below changes the bytes sent (spec G.3).
 #: chat-v2 coalesces consecutive same-role history messages; chat-v1 did not.
-CHAT_RENDER_VERSION = "chat-v2"
+#: chat-v3 writes a block's provenance attributes into its fence header
+#: (spec B.4); for a bundle whose blocks carry none it is byte-identical to
+#: chat-v2.
+CHAT_RENDER_VERSION = "chat-v3"
 
 #: Every chat render version this code can still produce. Invocations record
 #: the version they were rendered with, so replay (step 13) re-renders an old
 #: invocation with its own version, not the current default.
-CHAT_RENDER_VERSIONS = ("chat-v1", "chat-v2")
+CHAT_RENDER_VERSIONS = ("chat-v1", "chat-v2", "chat-v3")
+
+#: The versions that predate provenance headers.
+_HEADERS_WITHOUT_ATTRIBUTES = frozenset({"chat-v1", "chat-v2"})
 
 
 class UnknownRenderVersionError(ApolloError):
@@ -131,10 +137,15 @@ def render_chat(
     Each message keeps its words and its role (spec G.3), and roles alternate.
     That is chat-v2. `render_version="chat-v1"` renders as before it, one
     message per history block, for replaying invocations recorded under it.
+
+    chat-v3 adds a data block's attributes to its fence header, in the order
+    the compiler gave them: a memory's scope, origin, support, confidence,
+    observation count, age and how it was found (spec B.4).
     """
     if render_version not in CHAT_RENDER_VERSIONS:
         raise UnknownRenderVersionError(f"unknown chat render version {render_version!r}")
     coalesce = render_version != "chat-v1"
+    with_attributes = render_version not in _HEADERS_WITHOUT_ATTRIBUTES
     messages: list[RenderedMessage] = []
     placement: list[tuple[int, int]] = []
 
@@ -169,6 +180,8 @@ def render_chat(
         header = f"{block.block_type} tier={block.trust_tier}"
         if block.source_ref:
             header += f" ref={block.source_kind}:{block.source_ref}"
+        if with_attributes:
+            header += "".join(f" {key}={value}" for key, value in block.attributes)
         tail.append(fence(header, block.content, label=str(block.block_type)))
         tail_positions.append(block.position)
 

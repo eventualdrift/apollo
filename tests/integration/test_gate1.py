@@ -211,8 +211,8 @@ def test_actual_probe_render_is_validated_before_generation(db, clock) -> None:
         def render(self, bundle):
             request = super().render(bundle)
             self.render_count += 1
-            # Static renders are valid, but the request used by invoke is not.
-            return replace(request, messages=()) if self.render_count == 4 else request
+            # The five static renders are valid, but the request used by invoke is not.
+            return replace(request, messages=()) if self.render_count == 6 else request
 
     brain = ChangingRender(valid_generation)
     report = run_gate(db, clock, brain)

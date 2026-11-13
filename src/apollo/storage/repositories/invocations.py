@@ -5,7 +5,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from apollo.errors import FinalisationConflictError
+import psycopg
+
+from apollo.errors import FinalisationConflictError, InvocationRefusedError
 from apollo.storage.ids import uuid7
 from apollo.storage.unit_of_work import UnitOfWork
 
@@ -43,6 +45,40 @@ class InvocationRepository:
         if purpose not in PURPOSES:
             raise ValueError(f"unknown invocation purpose {purpose!r}")
         invocation_id = uuid7()
+        try:
+            self._insert_started(
+                invocation_id, turn_id, purpose, retry_of_invocation_id, brain_alias,
+                provider_key, adapter_key, render_version, compiler_version, token_estimator,
+                context_manifest, context_bundle_hash, context_token_estimate, max_trust_tier,
+                taint, generation_params, now,
+            )
+        except psycopg.errors.RestrictViolation:
+            # The insert guard (migration 0004): the manifest includes a memory
+            # that is tombstoned or missing. The text of the database error is
+            # dropped; the type says all that may be said.
+            raise InvocationRefusedError("the invocation's manifest was refused") from None
+        return invocation_id
+
+    def _insert_started(
+        self,
+        invocation_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        purpose: str,
+        retry_of_invocation_id: uuid.UUID | None,
+        brain_alias: str,
+        provider_key: str,
+        adapter_key: str,
+        render_version: str,
+        compiler_version: str,
+        token_estimator: str,
+        context_manifest: list[dict[str, Any]],
+        context_bundle_hash: str,
+        context_token_estimate: int,
+        max_trust_tier: str,
+        taint: int,
+        generation_params: dict[str, Any],
+        now: datetime,
+    ) -> None:
         self._uow.execute(
             "INSERT INTO model_invocation (id, turn_id, seq, purpose, retry_of_invocation_id,"
             "  brain_alias, provider_key, adapter_key, render_version, compiler_version,"
@@ -72,7 +108,6 @@ class InvocationRepository:
                 turn_id,
             ),
         )
-        return invocation_id
 
     def complete(
         self,
