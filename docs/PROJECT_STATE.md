@@ -10,6 +10,52 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): the acceptance record — step 16. The technical gate has not passed
+
+The entries below are unchanged. PR #29 (backup and restore) is merged. It had no Codex review;
+the self-review found two faults, which were fixed before the merge and are listed in its entry
+below.
+
+**Where the technical gate stands (spec §O.1):**
+- **25 of 30 criteria are proven** by tests that run on every commit.
+- **3 are proven in part** (3, 4, 7): Apollo's side is held by tests; the model's answer is not.
+- **2 are not yet proven** (11, 29): they are runs on real models.
+- No real model can be reached from the cloud session. Nothing has been shown on one since M2,
+  and the M2 runs were on `compiler-v1`.
+
+**What step 16 delivers:**
+- [`operations/acceptance.md`](operations/acceptance.md): each criterion, the tests that hold
+  it, what is open, and the commands for what is left. It also records the run on `brain.fake`
+  made for it (doctor, a real PostgreSQL restart mid-conversation, Gate 1, the corpus, the
+  persona suite, a proposal, a forget, and replay of every call).
+- `tests/architecture/test_acceptance_record.py`: fails if the record names a test that does
+  not exist, if its summary disagrees with its entries, if a title differs from the spec's, or
+  if it reports the gate as passed while any criterion is open.
+- `apollo proposal stats` now prints all the supporting evidence §O.2 asks for: what became of
+  each proposal; how many of Janu's answered turns made one, asked for one that could not be
+  made, or asked for none; and conversations started per day.
+- The continuity test now runs three exchanges before its restart, as O.1/1 words it. It ran
+  two.
+
+**Step 16 as the plan words it:** "Gate 1 and gate 2 run for whichever brain is bound to
+`brain.default`". `brain.default` is `brain.fake`. Gate 1 passes on it. Gate 2 exits 1 on it, as
+it must: an offline run can never be accepted. Neither result says anything about a real model.
+
+**What is left, and whose it is:**
+- **Janu, on the machine with the model server:** steps 1 to 7 of the acceptance record. They
+  cover criteria 3, 4, 7, 11 and 29, the §J.5 persona run on `compiler-v2`, whether a real model
+  can word a proposal, and a restore on his own deployment.
+- **Janu's decisions:** how the first accepted model is chosen (Gate 2 cannot pass without it);
+  the two spec questions under step 11; his review of the 25 retrieval cases; the readings
+  listed in the acceptance record; CLI or HTTP API; the Apollo VM.
+- **Then step 17**, the product trial: several days of ordinary use (§O.2).
+- **Claude:** whatever the model runs turn up. The likeliest are deterministic persona failures
+  to fix or put to Janu for a waiver, and the proposal request's wording if a model does not
+  follow it.
+
+**To resume:** all work is merged into `claude/apollo-m2-real-models`. Nothing is in progress.
+Start from the acceptance record's "What is left".
+
 ## Update (2026-11-13): backup and restore — step 15 is built, and one restore performed
 
 The entries below are unchanged. PRs #26 (proposals), #27 (replay) and #28 (failure behaviour)

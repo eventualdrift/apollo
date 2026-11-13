@@ -14,9 +14,10 @@ def test_conversation_survives_a_process_and_connection_restart(
     db, service_factory, clock, fresh_database
 ) -> None:
     conv = create_conversation(db, now=clock())
-    first = service_factory().submit(conversation_id=conv, text="You there?")
-    second = service_factory().submit(conversation_id=conv, text="Still here?")
-    assert first.status == second.status == "completed"
+    # O.1/1: a three-exchange conversation, then the restart, then the next turn.
+    before = [service_factory().submit(conversation_id=conv, text=text)
+              for text in ("You there?", "Still here?", "One more before the restart.")]
+    assert [turn.status for turn in before] == ["completed"] * 3
 
     # Simulate a restart: new Database object, new connections, new services,
     # a fresh identity loader and a fresh brain registry.
@@ -33,24 +34,24 @@ def test_conversation_survives_a_process_and_connection_restart(
     )
     assert restarted.recover_orphans() == {"turns": 0, "invocations": 0}
 
-    third = restarted.submit(conversation_id=conv, text="And now?")
-    assert third.status == "completed"
+    after = restarted.submit(conversation_id=conv, text="And now?")
+    assert after.status == "completed"
 
     with restarted_db.connect() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT context_manifest FROM model_invocation WHERE turn_id = %s", (third.turn_id,)
+            "SELECT context_manifest FROM model_invocation WHERE turn_id = %s", (after.turn_id,)
         )
         manifest = cur.fetchone()["context_manifest"]
         cur.execute("SELECT id, seq, role FROM message WHERE conversation_id = %s ORDER BY seq",
                     (conv,))
         messages = cur.fetchall()
 
-    assert [m["seq"] for m in messages] == [1, 2, 3, 4, 5, 6]
-    assert [m["role"] for m in messages] == ["user", "apollo"] * 3
+    assert [m["seq"] for m in messages] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [m["role"] for m in messages] == ["user", "apollo"] * 4
 
-    # The four messages that preceded the third turn are in its compiled context.
+    # The six messages of the three exchanges are in the next turn's compiled context.
     history_refs = [e["source_ref"] for e in manifest if e["block_type"] == "CONVERSATION_RECENT"]
-    assert history_refs == [str(m["id"]) for m in messages[:4]]
+    assert history_refs == [str(m["id"]) for m in messages[:6]]
 
 
 def test_one_turn_per_submitted_message(db, service, clock) -> None:

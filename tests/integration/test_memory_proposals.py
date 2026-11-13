@@ -23,7 +23,11 @@ from apollo.brains.base import Generation, GenerationParams, RenderedRequest
 from apollo.brains.fake import FakeBrain
 from apollo.core import memories
 from apollo.core import proposals as surface
-from apollo.core.conversations import create_benchmark_conversation, create_conversation
+from apollo.core.conversations import (
+    create_benchmark_conversation,
+    create_conversation,
+    started_per_day,
+)
 from apollo.core.proposals import ProposalError, ProposalNotFoundError, ProposalStatus
 from apollo.core.turns import SYSTEM_NOTE_CAPTURE_FAILED
 from apollo.errors import BrainTransportError
@@ -409,6 +413,40 @@ def test_the_capture_counts_are_the_product_gates_evidence(
     assert surface.capture_counts(db) == {
         "pending": 1, "saved": 1, "saved_edited": 1, "ignored": 1, "expired": 0,
     }
+
+
+def test_the_evidence_tells_a_capture_never_asked_for_from_one_that_failed(
+    db: Database, service_factory, clock
+) -> None:
+    """Spec O.2: "saved vs ignored vs never triggered", and conversations started per day.
+
+    Near-zero memory creation has two different causes, and the count has to
+    tell them apart: nothing was asked for, or it was asked for and the model's
+    answer could not be used. Eval turns are not the user's and are not counted,
+    and neither is a turn whose reply failed: it could not have proposed anything.
+    """
+    assert surface.capture_by_turn(db) == surface.TurnCapture(turns=0, proposed=0, failed=0)
+    assert started_per_day(db) == []
+
+    first = create_conversation(db, now=clock())
+    _say(db, service_factory, clock, "Good morning.", conversation=first)
+    _say(db, service_factory, clock, conversation=first)
+    _say(db, service_factory, clock, conversation=first,
+         brain=ProposingBrain("Sure, I will keep that in mind!"))
+    unanswered, _ = _say(db, service_factory, clock, conversation=first, brain=FakeBrain(
+        fail_times=9, failure=BrainTransportError(provider_error_type="timeout")))
+    assert unanswered.status == "failed"
+    benchmark = create_benchmark_conversation(db, now=clock(), title="benchmark")
+    _say(db, service_factory, clock, conversation=benchmark)
+    clock.now += timedelta(days=2)
+    _say(db, service_factory, clock)
+    _say(db, service_factory, clock, "And another thing entirely.")
+
+    counted = surface.capture_by_turn(db)
+    assert counted == surface.TurnCapture(turns=5, proposed=2, failed=1)
+    assert counted.not_asked == 2
+    day = clock.now.date()
+    assert started_per_day(db) == [(day - timedelta(days=2), 1), (day, 2)]
 
 
 # -- self scope (O.1/16) ---------------------------------------------------------------------

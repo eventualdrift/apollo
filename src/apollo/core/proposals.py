@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from apollo.audit.events import Actor, AuditEvent, EventType
+from apollo.core.turns import SYSTEM_NOTE_CAPTURE_FAILED
 from apollo.memory import proposals
 from apollo.memory.approval import Approval, ClaimEdit, approve
 from apollo.memory.models import (
@@ -195,3 +196,29 @@ def capture_counts(db: Database) -> dict[str, int]:
     with unit_of_work(db, expect_audit=False) as uow:
         counted = ProposalRepository(uow).counts_by_status()
     return {str(status): counted.get(str(status), 0) for status in ProposalStatus}
+
+
+@dataclass(frozen=True)
+class TurnCapture:
+    """Every answered turn of the user's own conversations, by what capture did with it.
+
+    Spec O.2 asks for "proposals saved vs ignored vs never triggered". The
+    statuses say what became of each proposal; this says how often one was
+    made at all, and tells a capture that was never asked for apart from one
+    that was asked for and failed.
+    """
+
+    turns: int
+    proposed: int
+    #: A proposal was asked for and none could be made.
+    failed: int
+
+    @property
+    def not_asked(self) -> int:
+        return self.turns - self.proposed - self.failed
+
+
+def capture_by_turn(db: Database) -> TurnCapture:
+    with unit_of_work(db, expect_audit=False) as uow:
+        counted = ProposalRepository(uow).personal_turns_by_capture(SYSTEM_NOTE_CAPTURE_FAILED)
+    return TurnCapture(**counted)

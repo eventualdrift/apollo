@@ -122,6 +122,31 @@ class ProposalRepository:
         )
         return {row["status"]: row["n"] for row in cur.fetchall()}
 
+    def personal_turns_by_capture(self, capture_note: str) -> dict[str, int]:
+        """Answered personal turns, by what the capture path did with each (spec O.2).
+
+        Only a turn that was answered can propose anything, so a turn whose
+        reply failed is not counted. A proposal row is never removed, so a
+        turn with a structuring call and no row is a capture that failed.
+        `capture_note` is the note written beside such a reply; it also covers
+        a failure before any call was made.
+        """
+        cur = self._uow.execute(
+            "SELECT count(*) AS turns, count(p.id) AS proposed,"
+            "       count(*) FILTER (WHERE p.id IS NULL AND (EXISTS ("
+            "           SELECT 1 FROM model_invocation i"
+            "            WHERE i.turn_id = t.id AND i.purpose = 'memory_proposal')"
+            "         OR EXISTS ("
+            "           SELECT 1 FROM message m WHERE m.turn_id = t.id"
+            "            AND m.role = 'system_note' AND m.content = %s))) AS failed"
+            "  FROM turn t LEFT JOIN memory_proposal p ON p.turn_id = t.id"
+            " WHERE t.conversation_mode = 'personal' AND t.status = 'completed'",
+            (capture_note,),
+        )
+        row = cur.fetchone()
+        assert row is not None
+        return {"turns": row["turns"], "proposed": row["proposed"], "failed": row["failed"]}
+
     def source_message_content(self, message_id: uuid.UUID) -> str | None:
         cur = self._uow.execute("SELECT content FROM message WHERE id = %s", (message_id,))
         row = cur.fetchone()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from apollo.audit.events import Actor, AuditEvent, EventType
@@ -57,6 +57,12 @@ def _create(
 def get_conversation(db: Database, conversation_id: uuid.UUID) -> dict[str, Any] | None:
     with unit_of_work(db, expect_audit=False) as uow:
         return ConversationRepository(uow).get(conversation_id)
+
+
+def started_per_day(db: Database) -> list[tuple[date, int]]:
+    """Personal conversations started on each UTC day, oldest first (spec O.2)."""
+    with unit_of_work(db, expect_audit=False) as uow:
+        return ConversationRepository(uow).started_per_day(MODE_PERSONAL)
 
 
 def transcript(db: Database, conversation_id: uuid.UUID) -> list[dict[str, Any]]:
