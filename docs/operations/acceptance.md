@@ -36,8 +36,40 @@ skipped.
 
 ## What is left
 
-These steps need the machine that runs the model server. Run them from the Apollo checkout, in
-order. Steps 1 to 4 are what the technical gate still needs.
+Every step below needs a real model. The model runs on your desktop, the machine with the RTX
+5070 Ti, and the cloud session Claude works in cannot reach it. So these steps run **on the
+desktop**, from the Apollo checkout there, in order. Steps 1 to 4 are what the technical gate
+still needs; step 8 is Gate 2.
+
+**Nothing in steps 0 to 6 touches anything personal.** The persona suite's cases are made up, and
+the steps use a scratch database that is dropped at the end. Their output, and the run files, are
+safe to hand to Claude.
+
+### 0. Before you start
+
+Bring the checkout up to date and install it, as the README's "Running it" describes. Then make a
+scratch database for these runs, beside your real one, never in it:
+
+```sh
+git pull
+pip install -e '.[dev]'
+
+createdb -h 127.0.0.1 -U apollo_owner apollo_accept
+export APOLLO_ADMIN_DSN="host=127.0.0.1 port=5432 user=apollo_owner dbname=apollo_accept"
+printf '%s\n' "$APOLLO_APP_PASSWORD" | apollo provision --password-stdin
+unset APOLLO_ADMIN_DSN
+
+export APOLLO_DATABASE_DSN="host=127.0.0.1 port=5432 user=apollo_app dbname=apollo_accept"
+apollo doctor                    # least privilege: OK
+```
+
+- Passwords come from `PGPASSWORD` or `~/.pgpass`, never from a command line.
+- `apollo doctor` also reports two PostgreSQL log settings. For a scratch database of made-up
+  cases they do not matter; for your real one they do (README, "PostgreSQL's own log").
+- When every step is done: `dropdb -h 127.0.0.1 -U apollo_owner apollo_accept`.
+
+What to bring back to Claude: the last lines each command prints, and the run files under
+`evals/runs/`. Claude then works through any failures with you.
 
 ### 1. Bind the model, and pass Gate 1
 
@@ -145,12 +177,23 @@ server, run `apollo say`, start the server, and run `apollo say` again.
 Criterion 30 was met on a scratch deployment. Your data deserves the same once it exists:
 [`backup-restore.md`](backup-restore.md), "Testing a restore".
 
-### 8. Gate 2 waits on a decision
+### 8. Gate 2: designate the first baseline
 
-Gate 2 (spec §G.5) accepts a model only by comparison with an accepted one. There is no accepted
-one yet, and the spec does not say how the first is chosen. Until you decide that,
-`apollo eval gate2` cannot pass for any model. [`persona-eval.md`](persona-eval.md) has a minimal
-proposal under "First incumbent".
+Gate 2 (spec §G.5) accepts a model by comparison with an accepted one. The first model has
+nothing to be compared with, so you designate it (ADR-0014; your decision of 2026-11-13). Use the
+run from step 2, once every deterministic failure in it is fixed or waived:
+
+```sh
+apollo eval gate2 evals/runs/LOCAL.json --first-baseline --review-template baseline-review.json
+# Read the run. Fill in baseline-review.json yourself: a decision for every case it lists,
+# and the designation. Then:
+apollo eval gate2 evals/runs/LOCAL.json --first-baseline --review baseline-review.json \
+  --write-acceptance baseline-acceptance.json
+```
+
+It passes when it prints `GATE 2:              PASSED` and writes the receipt.
+[`persona-eval.md`](persona-eval.md), "The first baseline", says what to fill in. It is twenty
+cases to read, three answers each. No tool fills in a decision for you.
 
 ### 9. Then the product gate
 
@@ -389,35 +432,39 @@ Each title is the spec's. Under it: what holds it, and what is open.
   [`backup-restore.md`](backup-restore.md). The dump was encrypted before it was written anywhere.
 - Not yet done on your own deployment, which does not exist yet. Step 7 above.
 
-## Decisions that are yours
+## Decisions
 
-None of these blocked the work so far. The first two block the gates.
+### Decided by Janu on 2026-11-13
 
-1. **A model to run against.** Steps 1 to 6 need the model server. If you would rather Claude
-   ran them, it needs a base URL the cloud session can reach, the model id and the context size.
-   If the server wants a key, the key goes in the session environment's secret settings, and
-   `apollo.toml` names only the variable. It never goes in chat, a file or a commit.
-2. **How the first accepted model is chosen** (step 8). Without it Gate 2 cannot pass.
-3. **Two spec questions** from the retrieval suite. *Decided on 2026-11-13, and built
-   (spec §E.6):*
-   - when two memories match equally, the newer one ranks first;
-   - a pinned memory counts as support only when the search also matched it.
-4. **Your review of the 25 retrieval cases** in `evals/retrieval/cases/`. *Accepted on
-   2026-11-13.*
-5. **Readings Claude made where the spec was silent.** Each is recorded in
-   [`../PROJECT_STATE.md`](../PROJECT_STATE.md) under the step that made it. The two you are most
-   likely to have a view on:
-   - A proposal that a forget declines is recorded as `ignored`, with the audit reason
-     `memory_tombstoned`. `expired` was the alternative.
-   - When a conversation no longer fits the context, a model-call row is recorded for a call
-     that was never made, so that replay can show what did not fit. ADR-0013 says a row is one
-     actual call. The alternative leaves the failure table's "manifest is recorded" unmet.
-6. **Whether Apollo stays a command-line program.**
-   - The spec draws a small web service (§A.1, §M.1: FastAPI, reachable from this machine only,
-     one access token) with the command line as its client.
-   - What is built is the command line calling Apollo's core directly. Nothing listens on a
-     port. §D.9/5 records that, and the implementation plan has no step that builds the service.
-   - Claude recommends leaving it so for the trial. One person on one machine gains nothing from
-     a service, and with nothing listening there is nothing to bind or to authenticate (§K.1,
-     §K.2). It is needed once a second client, such as a phone or a web page, must reach Apollo.
-7. **The go-ahead for the Apollo VM** on your own hardware.
+| Question | Decision | Status |
+|---|---|---|
+| Where the model runs | On the desktop (RTX 5070 Ti), the root server. The MacBook connects to it for everyday use. Phone access comes later. | Steps 0 to 8 above |
+| How the first model is accepted | By designating one complete real-model run that has been read in full (ADR-0014). | Built; step 8 |
+| Of two equal matches, which leads | The newer memory (spec §E.6/1). | Built |
+| Is a pinned memory always support | Only when the search also matched it (spec §E.6/2). | Built |
+| The 25 retrieval cases | Accepted. | Done |
+| A proposal that a forget declines | Recorded as `ignored`, reason `memory_tombstoned` (spec §P.4). | As built |
+| A context too large to send | Recorded as one failed model-call row for the call not made (spec §P.4). | As built |
+| Command line or web service | The command line, for the trial. A web interface or an app comes later. | As built |
+| The Apollo VM | Authorised. | [`deployment.md`](deployment.md) |
+
+### Still yours
+
+1. **Steps 0 to 8 above**, on the desktop.
+2. **Two facts the deployment needs**, asked in [`deployment.md`](deployment.md): what the desktop
+   runs, and which machine holds the Apollo VM.
+3. **A restore on your own deployment** (step 7), once it exists.
+4. **The product trial** (step 9): several days of ordinary use.
+
+### After the gates, and not started
+
+Your direction, recorded so that it is not lost. None of it is built, and each is a decision of
+its own when its time comes:
+
+- a web interface or an app, and access from your phone. The spec defers remote access until a
+  second client exists (§P.3); the phone is that client;
+- Apollo as part of everything you do, including a map of your connected devices;
+- cleaning up the GitHub repository, possibly moving to a new branch or a new repository, for
+  privacy;
+- much deeper security and privacy work, because you will tell Apollo a great deal about
+  yourself.

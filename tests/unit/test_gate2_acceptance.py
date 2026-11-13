@@ -23,7 +23,14 @@ from apollo.evals.evidence import (
     required_samples,
     validate_run,
 )
-from apollo.evals.gate2 import Waiver, WaiverError, evaluate_gate2, load_waivers
+from apollo.evals.gate2 import (
+    Gate2Status,
+    Waiver,
+    WaiverError,
+    evaluate_first_baseline,
+    evaluate_gate2,
+    load_waivers,
+)
 from apollo.evals.loader import load_cases
 from apollo.evals.models import (
     CheckSpec,
@@ -33,6 +40,7 @@ from apollo.evals.models import (
     RunRecord,
     SampleRecord,
 )
+from apollo.evals.review import NO_INCUMBENT
 from apollo.evals.runner import PersonaRunner, compile_case_bundle, to_document
 from tests.unit.test_eval_gate2 import IDENTITY, case, run
 
@@ -407,6 +415,8 @@ def test_offline_provenance_cannot_be_presented_as_real(evidence, field, value):
     evidence.candidate[field] = value
     assert not evaluate(evidence).real_model_evidence
     assert not evaluate(evidence).passed
+    # Whichever field gives it away, it is reported as what it is (Codex, PR #32).
+    assert evaluate(evidence).status is Gate2Status.INFRASTRUCTURE_ONLY
 
 
 def test_offline_model_identifier_and_fake_incumbent_fail(evidence):
@@ -414,6 +424,8 @@ def test_offline_model_identifier_and_fake_incumbent_fail(evidence):
         for s in c["samples"]:
             s["model_identifier"] = "fake:replay"
     assert not evaluate(evidence).real_model_evidence
+    assert evaluate(evidence).status is Gate2Status.INFRASTRUCTURE_ONLY
+    assert baseline(evidence).status is Gate2Status.INFRASTRUCTURE_ONLY
     evidence.incumbent["adapter_key"] = "fake"
     assert not evaluate(evidence).comparison_valid
 
@@ -510,6 +522,7 @@ def test_any_run_artifact_content_change_invalidates_prior_review(evidence, whic
     "alter",
     [
         lambda r: r.update(kind="first_baseline"),
+        lambda r: r.update(kind="gate2_first_baseline"),
         lambda r: r["binding"]["candidate"].update(content_hash="0" * 64),
         lambda r: r["binding"].update(incumbent_acceptance_hash=None),
         lambda r: r["binding"].update(incumbent=deepcopy(r["binding"]["candidate"])),
@@ -730,3 +743,255 @@ def test_cli_malformed_json_does_not_echo_evidence(cli_evidence, capsys):
     assert main(cli_args(cli_evidence)) == 2
     output = capsys.readouterr()
     assert "PRIVATE_INVALID_EVIDENCE_SENTINEL" not in output.out + output.err
+
+
+# -- the first baseline (ADR-0014; Janu, 2026-11-13) -----------------------------------
+#
+# The chain of replacement receipts has to start somewhere. These tests hold what the
+# start may and may not be. All evidence is synthetic; no test issues a real designation.
+
+
+def baseline(evidence, **overrides):
+    options = dict(
+        identity_hash=evidence.identity.content_hash,
+        identity=evidence.identity,
+        cases=evidence.cases,
+    )
+    options.update(overrides)
+    candidate = options.pop("candidate", evidence.candidate)
+    return evaluate_first_baseline(candidate, **options)
+
+
+def designated(evidence, **overrides):
+    """The template, completed as a person would: every decision, and the designation."""
+    template = deepcopy(baseline(evidence, **overrides).review_template)
+    assert template is not None
+    template.update(reviewer="SYNTHETIC TEST REVIEWER", review_date=date.today().isoformat())
+    template["designation"].update(
+        no_incumbent_comparison=True,
+        note="Synthetic designation: this run is the first baseline for this test only.",
+    )
+    for decision in template["decisions"]:
+        decision.update(decision="accept", date=date.today().isoformat())
+    return template
+
+
+def test_a_first_baseline_is_a_read_run_and_a_persons_dated_designation(evidence):
+    pending = baseline(evidence)
+    assert pending.first_baseline and pending.candidate_valid and pending.mechanically_eligible
+    assert not pending.review_complete and not pending.passed
+    assert pending.acceptance_record is None
+
+    # The template decides nothing: every decision and the designation are blank.
+    template = pending.review_template
+    assert template["kind"] == "gate2_first_baseline"
+    assert template["reviewer"] is None and template["review_date"] is None
+    assert template["designation"] == {"no_incumbent_comparison": None, "note": None}
+    assert all(d["decision"] is None for d in template["decisions"])
+    # Every case with a manual rubric must be read, in every sample.
+    assert [r["case_id"] for r in template["requirements"]] == ["synthetic_manual"]
+    assert template["requirements"][0]["sample_indexes"] == [1, 2, 3]
+    assert len(template["requirements"][0]["manual_rubrics"]) == 2
+    assert not baseline(evidence, review=template).passed
+
+    report = baseline(evidence, review=designated(evidence))
+    assert report.passed and report.review_complete and report.status is Gate2Status.PASSED
+    receipt = report.acceptance_record
+    assert (receipt["kind"], receipt["status"]) == ("gate2_first_baseline", "passed")
+    assert receipt["binding"]["candidate"] == {
+        "run_id": evidence.candidate["run_id"],
+        "content_hash": document_hash(evidence.candidate),
+    }
+    assert "incumbent" not in receipt["binding"]
+    lines = "\n".join(report.as_lines())
+    assert "first baseline:      yes — no incumbent, so no comparison was made" in lines
+    assert "comparison valid" not in lines and "incumbent authorised" not in lines
+    assert report.as_dict()["first_baseline"] is True
+    assert any("accepted without comparison" in note for note in report.notes)
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        lambda r: r["designation"].update(no_incumbent_comparison=None),
+        lambda r: r["designation"].update(no_incumbent_comparison=False),
+        lambda r: r["designation"].update(note=None),
+        lambda r: r["designation"].update(note="ok"),
+        lambda r: r["designation"].update(note="           "),
+        lambda r: r.update(reviewer=" "),
+        lambda r: r.update(review_date=(date.today() + timedelta(days=1)).isoformat()),
+        lambda r: r["decisions"][0].update(decision=None),
+        lambda r: r["decisions"][0].update(decision="reject"),
+        lambda r: r["decisions"][0].update(sample_indexes=[1]),
+        lambda r: r["decisions"][0].update(manual_check_indexes=[0]),
+        lambda r: r["decisions"].clear(),
+        lambda r: r["requirements"].clear(),
+        lambda r: r.update(kind="gate2_replacement"),
+        lambda r: r.update(unexpected=True),
+    ],
+)
+def test_a_first_baseline_review_missing_any_part_of_the_designation_fails(evidence, alter):
+    review = designated(evidence)
+    alter(review)
+    report = baseline(evidence, review=review)
+    assert not report.passed and report.acceptance_record is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("evidence_kind", "offline"), ("adapter_key", "fake"), ("brain_alias", "brain.fake"),
+     ("provider_key", "replay")],
+)
+def test_a_first_baseline_is_never_offline_fake_or_replayed_evidence(evidence, field, value):
+    """`brain.fake` proves the harness. It cannot be the model everything is compared with."""
+    review = designated(evidence)
+    evidence.candidate[field] = value
+    report = baseline(evidence, review=review)
+    assert not report.passed and not report.real_model_evidence
+    # Reported as what it is, whichever field gives it away (Codex, PR #32).
+    assert report.status is Gate2Status.INFRASTRUCTURE_ONLY
+    assert report.review_template is None  # nothing to designate
+
+
+def test_a_first_baseline_needs_the_whole_current_corpus(evidence):
+    review = designated(evidence)
+    del evidence.candidate["cases"][0]
+    partial = baseline(evidence, review=review)
+    # A real run that is incomplete has failed. It is not relabelled as offline.
+    assert not partial.passed and partial.status is Gate2Status.FAILED
+    assert not baseline(evidence, candidate={"cases": []}, review=review).passed
+    malformed = baseline(evidence, candidate={"cases": [{"not": "a run"}]}, review=review)
+    assert malformed.status is Gate2Status.FAILED
+
+
+def test_a_first_baseline_review_is_bound_to_the_run_that_was_read(evidence):
+    review = designated(evidence)
+    evidence.candidate["render_version"] = "another-render-version"
+    report = baseline(evidence, review=review)
+    assert report.candidate_valid and not report.passed
+    assert any("review binding is stale" in reason for reason in report.blocking)
+
+
+def test_a_first_baseline_failure_needs_a_waiver_written_for_a_baseline(evidence):
+    answer(evidence, 0, 0, "forbidden")
+    unwaived = baseline(evidence, review=designated(evidence))
+    assert not unwaived.passed and not unwaived.mechanically_eligible
+
+    # A waiver written against a comparison names an incumbent run. It is not
+    # a waiver for a baseline, which has none.
+    for_a_comparison = (scoped_waiver(evidence),)
+    assert baseline(evidence, waivers=for_a_comparison).rejected_waivers
+
+    waivers = (scoped_waiver(evidence, incumbent_hash=NO_INCUMBENT),)
+    review = designated(evidence, waivers=waivers)
+    # The failing case is now one the person must decide on, and `accept` is not enough.
+    assert [r["case_id"] for r in review["requirements"] if r["deterministic_failure"]] == [
+        "synthetic_deterministic"]
+    assert not baseline(evidence, waivers=waivers, review=review).passed
+    failing = next(d for d in review["decisions"] if d["case_id"] == "synthetic_deterministic")
+    failing.update(decision="waive", reason="Synthetic deviation knowingly waived.")
+    report = baseline(evidence, waivers=waivers, review=review)
+    assert report.passed and len(report.failures) == 1 and len(report.waived) == 1
+    # And that waiver is not a waiver for a replacement.
+    assert evaluate(evidence, waivers=waivers).rejected_waivers
+
+
+def test_the_first_baseline_receipt_is_what_the_next_replacement_is_accepted_against(evidence):
+    """The chain starts here: baseline, then replacement, then the next replacement."""
+    evidence.candidate = evidence.incumbent  # the run being designated
+    root = baseline(evidence, review=designated(evidence)).acceptance_record
+    assert root["kind"] == "gate2_first_baseline"
+
+    evidence.receipt = root
+    evidence.candidate = synthetic_run(evidence.cases, evidence.identity, "candidate")
+    pending = evaluate(evidence)
+    assert pending.incumbent_authorised and not pending.passed
+    replacement = evaluate(evidence, review=reviewed(evidence))
+    assert replacement.passed
+    receipt = replacement.acceptance_record
+    assert receipt["kind"] == "gate2_replacement"
+    assert receipt["binding"]["incumbent_acceptance_hash"] == document_hash(root)
+
+    evidence.incumbent, evidence.receipt = evidence.candidate, receipt
+    evidence.candidate = synthetic_run(evidence.cases, evidence.identity, "next")
+    assert evaluate(evidence, review=reviewed(evidence)).passed
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        lambda r: r["binding"]["candidate"].update(content_hash="0" * 64),
+        lambda r: r["binding"]["candidate"].update(run_id="some-other-run"),
+        lambda r: r["binding"].update(identity_hash="0" * 64),
+        lambda r: r["binding"].update(corpus_hash="0" * 64),
+        lambda r: r.update(reviewer=" "),
+        lambda r: r.update(review_date="2999-01-01"),
+        lambda r: r.update(status="pending"),
+        lambda r: r.pop("review_hash"),
+        lambda r: r["binding"].update(incumbent=deepcopy(r["binding"]["candidate"])),
+    ],
+)
+def test_a_baseline_receipt_authorises_only_the_run_it_designated(evidence, alter):
+    evidence.candidate = evidence.incumbent
+    root = baseline(evidence, review=designated(evidence)).acceptance_record
+    alter(root)
+    evidence.receipt = root
+    evidence.candidate = synthetic_run(evidence.cases, evidence.identity, "candidate")
+    report = evaluate(evidence, review=reviewed(evidence))
+    assert not report.incumbent_authorised and not report.passed
+
+
+def test_a_replacement_review_cannot_designate_a_baseline_and_the_reverse(evidence):
+    assert not baseline(evidence, review=reviewed(evidence)).passed
+    assert not evaluate(evidence, review=designated(evidence)).passed
+
+
+def test_the_ordinary_gate_still_has_no_way_round_the_incumbent(evidence):
+    """Designation is a separate, explicit act. Leaving the incumbent out is not it."""
+    report = evaluate(evidence, incumbent=None, incumbent_acceptance=None,
+                      review=designated(evidence))
+    assert not report.passed and not report.first_baseline
+    assert any("missing incumbent" in reason for reason in report.blocking)
+
+
+def test_cli_first_baseline_writes_a_pending_template_then_a_receipt_only_on_pass(
+    cli_evidence, evidence, tmp_path, capsys
+):
+    from apollo.cli.main import main
+
+    template_path = tmp_path / "baseline-review.json"
+    receipt_path = tmp_path / "baseline-acceptance.json"
+    base = ["eval", "gate2", cli_evidence["candidate"], "--first-baseline"]
+
+    assert main([*base, "--review-template", str(template_path)]) == 1
+    template = load_document(template_path)
+    assert template["kind"] == "gate2_first_baseline"
+    assert template["designation"] == {"no_incumbent_comparison": None, "note": None}
+    assert main([*base, "--review-template", str(template_path)]) == 2  # never overwritten
+
+    # The blank template is not a designation.
+    assert main([*base, "--review", str(template_path),
+                 "--write-acceptance", str(receipt_path)]) == 1
+    assert not receipt_path.exists()
+    assert "GATE 2:              FAILED" in capsys.readouterr().out
+
+    completed = tmp_path / "baseline-review-completed.json"
+    completed.write_text(json.dumps(designated(evidence)))
+    assert main([*base, "--review", str(completed),
+                 "--write-acceptance", str(receipt_path)]) == 0
+    out = capsys.readouterr().out
+    assert "GATE 2:              PASSED" in out and "first baseline:      yes" in out
+    assert load_document(receipt_path)["kind"] == "gate2_first_baseline"
+    assert main([*base, "--review", str(completed),
+                 "--write-acceptance", str(receipt_path)]) == 2  # no overwriting a receipt
+
+
+@pytest.mark.parametrize("option", ["--incumbent", "--incumbent-acceptance"])
+def test_cli_first_baseline_cannot_be_combined_with_an_incumbent(cli_evidence, option, capsys):
+    from apollo.cli.main import main
+
+    key = "incumbent" if option == "--incumbent" else "receipt"
+    assert main(["eval", "gate2", cli_evidence["candidate"], "--first-baseline",
+                 option, cli_evidence[key]]) == 2
+    assert "cannot be combined" in capsys.readouterr().err
+

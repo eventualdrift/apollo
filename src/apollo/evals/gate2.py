@@ -15,6 +15,12 @@ Three refusals are deliberate:
 * no behavioural claim for an offline brain. `brain.fake` proves the machinery,
   not Apollo — it is not intelligent, and a green fake run is evidence about
   the harness only.
+
+A model is accepted in one of two ways. `evaluate_gate2` is replacement: a
+candidate compared with an accepted incumbent. `evaluate_first_baseline` is
+the start of that chain (ADR-0014): the one run accepted with nothing to
+compare it to, on a person's dated designation and their reading of every
+manual case. It relaxes none of the three refusals above.
 """
 
 from __future__ import annotations
@@ -31,7 +37,12 @@ from apollo.core.identity import Identity, IdentityLoader
 from apollo.errors import ApolloError
 from apollo.evals import review as review_module
 from apollo.evals.diff import diff_runs
-from apollo.evals.evidence import DEFAULT_CASES_DIR, document_hash, validate_run
+from apollo.evals.evidence import (
+    DEFAULT_CASES_DIR,
+    EvidenceValidation,
+    document_hash,
+    validate_run,
+)
 from apollo.evals.loader import load_cases
 from apollo.evals.models import PersonaCase
 
@@ -174,6 +185,9 @@ class Gate2Report:
     comparison: dict[str, Any] | None = None
     review_template: dict[str, Any] | None = None
     acceptance_record: dict[str, Any] | None = None
+    #: This is a first-baseline designation (ADR-0014): there is no incumbent,
+    #: so there is no comparison, and none is claimed.
+    first_baseline: bool = False
 
     @property
     def passed(self) -> bool:
@@ -205,6 +219,7 @@ class Gate2Report:
             "comparison": self.comparison,
             "review_template": self.review_template,
             "acceptance_record": self.acceptance_record,
+            "first_baseline": self.first_baseline,
         }
 
     def as_lines(self) -> list[str]:
@@ -215,10 +230,15 @@ class Gate2Report:
             f"cases/samples:       {self.case_count}/{self.sample_count}",
             f"identity hash:       {self.observed_identity_hash or '<none>'}",
             f"candidate valid:     {self.candidate_valid}",
-            f"comparison valid:    {self.comparison_valid}",
-            f"incumbent authorised:{self.incumbent_authorised}",
-            f"review complete:     {self.review_complete}",
         ]
+        if self.first_baseline:
+            lines.append("first baseline:      yes — no incumbent, so no comparison was made")
+        else:
+            lines += [
+                f"comparison valid:    {self.comparison_valid}",
+                f"incumbent authorised:{self.incumbent_authorised}",
+            ]
+        lines.append(f"review complete:     {self.review_complete}")
         if self.blocking:
             lines.append("blocking:")
             lines += [f"  - {reason}" for reason in self.blocking]
@@ -371,12 +391,7 @@ def evaluate_gate2(
     if template is None:
         blocking.append("human review cannot be validated without valid comparable evidence")
 
-    if not run.get("cases"):
-        status = Gate2Status.NOT_RUN
-    elif adapter_key in OFFLINE_ADAPTER_KEYS or run.get("evidence_kind") == "offline":
-        status = Gate2Status.INFRASTRUCTURE_ONLY
-    else:
-        status = Gate2Status.FAILED if blocking else Gate2Status.PASSED
+    status = _status(run, adapter_key, evidence, blocking)
 
     return Gate2Report(
         brain_alias=brain_alias,
@@ -396,7 +411,8 @@ def evaluate_gate2(
         sample_count=len(samples),
         notes=(
             "hashes bind evidence; they do not authenticate its author or provider",
-            "offline runs prove infrastructure only; no first-baseline bypass exists",
+            "offline runs prove infrastructure only; a first baseline is designated "
+            "only with --first-baseline, by a person, on real-model evidence",
         ),
         candidate_valid=candidate_valid,
         comparison_valid=comparison_valid,
@@ -410,6 +426,141 @@ def evaluate_gate2(
             else None
         ),
     )
+
+
+def evaluate_first_baseline(
+    run: dict[str, Any],
+    *,
+    identity_hash: str,
+    waivers: tuple[Waiver, ...] = (),
+    identity: Identity | None = None,
+    cases: list[PersonaCase] | None = None,
+    review: dict[str, Any] | None = None,
+) -> Gate2Report:
+    """Designate `run` the first baseline: accepted with nothing to compare it to (ADR-0014).
+
+    Everything replacement acceptance asks of a candidate is asked here, except
+    the comparison, which has no other side:
+
+    * a complete run of the current corpus, at the current identity, compiler
+      and estimator, on a real model (never offline, fake or replayed);
+    * every deterministic failure waived by a waiver scoped to this run;
+    * a person's decision on every case with a manual rubric, in every sample,
+      and on every failing case;
+    * their designation: an explicit acknowledgement that no incumbent
+      comparison was made, and a note in their own words.
+
+    Nothing here is decided by code. A template has every such field null.
+    """
+    brain_alias = str(run.get("brain_alias", ""))
+    adapter_key = str(run.get("adapter_key", ""))
+    observed_identity = run.get("identity_hash")
+    try:
+        candidate_hash = document_hash(run)
+    except (ValueError, TypeError):
+        report = not_run(brain_alias, "run evidence must be finite JSON data")
+        report.status = Gate2Status.FAILED
+        report.first_baseline = True
+        return report
+    expected_cases = cases if cases is not None else load_cases(DEFAULT_CASES_DIR)
+    current_identity = identity or IdentityLoader(DEFAULT_CASES_DIR.parents[2] / "identity").load()
+    evidence = validate_run(run, cases=expected_cases, identity=current_identity)
+    blocking = [f"candidate: {problem}" for problem in evidence.problems]
+    if identity_hash != current_identity.content_hash:
+        blocking.append("supplied current identity hash does not match repository identity")
+    candidate_valid = not blocking
+    entries = evidence.document["cases"] if evidence.document is not None else []
+    samples = [s for c in entries for s in c["samples"]]
+    failures = tuple(_failures(entries))
+    waived, unwaived, rejected = _apply_waivers(
+        failures,
+        waivers,
+        brain_alias=brain_alias,
+        identity_hash=identity_hash,
+        cases=entries,
+        candidate_hash=candidate_hash,
+        incumbent_hash=review_module.NO_INCUMBENT,
+    )
+    for failure in unwaived:
+        blocking.append(
+            f"{failure.case_id} sample {failure.sample_index}: deterministic check(s) "
+            f"{', '.join(failure.failing_checks)} failed with no waiver"
+        )
+    blocking.extend(f"waiver rejected: {r.reason}" for r in rejected)
+    mechanically_eligible = candidate_valid and not unwaived and not rejected
+
+    template = None
+    review_complete = False
+    if candidate_valid:
+        template = review_module.baseline_template(
+            run,
+            expected_cases,
+            waivers=[w.as_dict() for w in waivers],
+            failing_cases={failure.case_id for failure in failures},
+        )
+        review_errors = review_module.baseline_review_problems(review, template)
+        review_complete = not review_errors
+        blocking.extend(review_errors)
+    else:
+        blocking.append("human review cannot be validated without valid candidate evidence")
+
+    status = _status(run, adapter_key, evidence, blocking)
+
+    return Gate2Report(
+        brain_alias=brain_alias,
+        adapter_key=adapter_key,
+        status=status,
+        run_completed=evidence.completed,
+        expected_identity_hash=identity_hash,
+        observed_identity_hash=observed_identity if isinstance(observed_identity, str) else None,
+        mechanically_eligible=mechanically_eligible,
+        real_model_evidence=evidence.real_model,
+        blocking=tuple(blocking),
+        failures=failures,
+        waived=tuple(waived),
+        rejected_waivers=tuple(rejected),
+        manual_cases=tuple(_manual_cases(entries)),
+        case_count=len(entries),
+        sample_count=len(samples),
+        notes=(
+            "hashes bind evidence; they do not authenticate its author or provider",
+            "a first baseline is accepted without comparison: it says a person read this "
+            "run and chose it as the starting point, not that it matches anything",
+            "every later model is accepted only by comparison with an accepted one",
+        ),
+        candidate_valid=candidate_valid,
+        review_complete=review_complete,
+        review_template=template,
+        acceptance_record=(
+            review_module.baseline_acceptance(review)
+            if status is Gate2Status.PASSED and review is not None
+            else None
+        ),
+        first_baseline=True,
+    )
+
+
+def _status(
+    run: dict[str, Any], adapter_key: str, evidence: EvidenceValidation, blocking: list[str]
+) -> Gate2Status:
+    """NOT_RUN for nothing; INFRASTRUCTURE_ONLY for known offline evidence; else pass or fail.
+
+    Offline evidence is recognised three ways: by its adapter, by what the run
+    declares, and by any fake, offline or replay marker the validator found in
+    a run that is otherwise well-formed (its brain alias, its provider, a
+    sample's model identifier). Whichever gives it away, the run is reported
+    as what it is rather than as a real run that failed. A run that is
+    malformed says nothing about its provenance, and has simply failed.
+    """
+    if not run.get("cases"):
+        return Gate2Status.NOT_RUN
+    if (
+        adapter_key in OFFLINE_ADAPTER_KEYS
+        or run.get("evidence_kind") == "offline"
+        or (evidence.document is not None and not evidence.real_model)
+    ):
+        return Gate2Status.INFRASTRUCTURE_ONLY
+    return Gate2Status.FAILED if blocking else Gate2Status.PASSED
 
 
 def compare_bundle_hashes(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:

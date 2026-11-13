@@ -10,6 +10,83 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): everything buildable without Janu's desktop is built; what is left runs there
+
+The entries below are unchanged. This closes the work that followed Janu's answers of
+2026-11-13. It goes in with the first-baseline designation (ADR-0014, the entry below), on which
+Codex raised one P2, reproduced and fixed: a run given away as offline by its provider or model
+name is now reported `infrastructure_only`, in both Gate 2 paths.
+
+**Where the technical gate stands: unchanged.** 25 of 30 criteria proven; 3 proven on Apollo's
+side only (3, 4, 7); 2 not yet proven (11, 29). Nothing has been shown on a real model, and
+`compiler-v3` has never been sent to one.
+
+**What this change adds (documents only):**
+- [`operations/acceptance.md`](operations/acceptance.md) now starts from where the model is:
+  Janu's desktop. It has a step 0 (a scratch database, tested in the cloud session against
+  PostgreSQL 16), says that nothing in steps 0 to 6 is personal, and lists what Janu decided on
+  2026-11-13, what is still his, and what comes after the gates.
+- [`operations/deployment.md`](operations/deployment.md): the machines Janu described (desktop
+  for the model, the Apollo VM, the MacBook as terminal, the phone later) and the rules the
+  deployment has to keep (spec §K). **It is a plan. Nothing in it has been run on his machines.**
+
+**Why Claude cannot do the model runs:** the cloud session has no route to the desktop. Claude
+checked whether a folder on it was shared with the session; none was. The runs happen on the
+desktop: by Janu, by a coding session running on that machine, or by this session if the Apollo
+folder there is shared with it.
+
+**Asked of Janu:**
+1. Steps 0 to 8 of the acceptance record, on the desktop.
+2. What the desktop runs (Windows or Linux), and whether September's model setup is still there.
+3. Which machine holds the Apollo VM. Claude recommends his Proxmox host over the desktop.
+4. The repository is public. Claude recommends making it private now, ahead of the wider
+   clean-up he plans; that is his setting to change.
+
+**After the gates, and not started** (Janu's direction, 2026-11-13): a web interface or app and
+phone access; Apollo woven into his other tools, with a map of his devices; a clean repository;
+much deeper security and privacy work.
+
+**To resume:** nothing is in progress. Start from the acceptance record's "What is left". When
+run output comes back, the likely work is deterministic persona failures to fix or put to Janu
+for a waiver, and the proposal request's wording if a real model does not follow it.
+
+## Update (2026-11-13): Gate 2 can accept a first model — the first-baseline designation is built
+
+The entries below are unchanged. PR #31 (the two retrieval rules, `compiler-v3`) is merged. Codex
+reviewed it: one P2, reproduced and fixed (pinned memories now take the same order among
+themselves), and a clean security review.
+
+**Janu's decision 2 is built (ADR-0014).** Gate 2 accepted a model only by comparison with an
+accepted one, and every receipt named the receipt before it, so nothing could ever be accepted.
+The first model is now accepted by designation:
+- `apollo eval gate2 RUN --first-baseline --review-template FILE` writes a blank review.
+- Janu fills it in himself: a decision on every case with a manual rubric (20 cases, 60 answers)
+  and on every failing case, and a designation that acknowledges no comparison was made, with a
+  note in his own words.
+- `apollo eval gate2 RUN --first-baseline --review FILE --write-acceptance RECEIPT` checks it and
+  writes the receipt only if the gate passes.
+- The receipt (`gate2_first_baseline`) is what the next model is compared against.
+
+**What it does not loosen:**
+- A fake, offline or replayed run is never designated. It reports `infrastructure_only`.
+- A deterministic failure still needs a dated, reasoned waiver, scoped to this run. A waiver
+  written for a comparison is rejected for a baseline, and the reverse.
+- The ordinary gate still fails without an incumbent. Designation is a separate command, and it
+  refuses to be combined with `--incumbent`.
+- A replacement receipt relabelled as a baseline is rejected.
+- No code fills in a decision. Six tests were each checked by breaking the guard they cover.
+
+**Two consequences Janu should know (both in ADR-0014):**
+- **A baseline belongs to one identity, corpus and compiler version**, as every receipt did.
+  After an identity edit or a compiler change, the same model is run and designated again.
+- **Nothing stops a second designation.** Receipts are local files and Gate 2 keeps no state.
+  The safeguard is that it is a deliberate, written, dated act.
+
+**Not yet done:** any real designation. It needs a real-model run, which needs Janu's desktop.
+
+**Remaining work:** the runbook for the model runs on his desktop; then, on his machine,
+acceptance steps 1 to 8, and the product trial.
+
 ## Update (2026-11-13): Janu's decisions on the open questions; the two retrieval rules are built
 
 The entries below are unchanged. PR #30 (the acceptance record) is merged, and Codex reviewed it

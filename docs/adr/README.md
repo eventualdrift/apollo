@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Thirteen records, covering the decisions judged expensive to reverse or likely to be re-litigated.
+Fourteen records, covering the decisions judged expensive to reverse or likely to be re-litigated.
 One page each: context, decision, consequences, reversal cost.
 
 Source: [`../architecture/phase-zero-spec.md`](../architecture/phase-zero-spec.md).
@@ -20,6 +20,7 @@ Source: [`../architecture/phase-zero-spec.md`](../architecture/phase-zero-spec.m
 | [0011](./ADR-0011-lexical-retrieval-only.md) | Lexical retrieval only; embeddings gated on retrieval-eval evidence | accepted |
 | [0012](./ADR-0012-behavioural-compatibility-gate.md) | Behavioural compatibility is a separate gate from protocol compatibility | accepted |
 | [0013](./ADR-0013-turns-contain-model-invocations.md) | A turn contains zero or more model invocations | accepted |
+| [0014](./ADR-0014-first-baseline-designation.md) | The first accepted model is designated by a person, with no comparison | accepted |
 
 ## Mapping to nominated topics
 
@@ -37,6 +38,9 @@ Four additions, each justified rather than manufactured:
 - **0013 — turns contain model invocations.** Added in the rev-3 correction pass. Phase zero already
   makes two kinds of model call, and a single set of model fields on `turn` would leave the second
   unaudited. Cheap to decide now, a migration of every historical turn later.
+- **0014 — first-baseline designation.** Added on 2026-11-13. ADR-0012's gate accepts a model only
+  against an accepted one, and nothing said how the first is chosen, so nothing could be accepted.
+  Janu decided how.
 
 ## Not ADR-worthy
 

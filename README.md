@@ -67,6 +67,10 @@ that run on every commit. Five wait on a run against a real model, which has not
 what proves it, and the commands for what is left. After the technical gate comes the product
 gate, which is several days of ordinary use.
 
+[`docs/operations/deployment.md`](docs/operations/deployment.md) says what a real deployment has
+to keep true before anything personal goes into it. It is a plan: nothing in it has been run on
+the machines it describes.
+
 ## Two database roles
 
 Apollo runs as a least-privilege role that **cannot modify the audit stream**. That is a load-bearing
