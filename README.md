@@ -298,10 +298,13 @@ your terminal; nothing else does, and none of it is logged.
 ## Backups
 
 ```sh
-apollo backup dump | age -r "$RECIPIENT" -o "$BACKUP_DIR/$(apollo backup name age)"
+apollo backup dump | age -r "$RECIPIENT" -o "$BACKUP_DIR/$NAME.partial"   # then rename
 age -d -i apollo-backup.key "$BACKUP_DIR/apollo-....dump.age" | apollo backup verify
 apollo backup prune "$BACKUP_DIR"
 ```
+
+Use the script in the procedure below rather than the first line alone: it gives a file a
+backup's name only once the dump has succeeded.
 
 - **A backup is only ever a stream.** `apollo backup dump` writes to a pipe and refuses a file,
   so the only backup you can keep is one that went through an encryption tool first. The tool

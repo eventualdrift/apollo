@@ -265,6 +265,25 @@ def test_something_that_is_not_a_backup_is_refused_and_leaves_nothing_behind(
     assert _scratch_databases(owner_dsn) == []
 
 
+def test_a_dump_of_some_other_database_is_not_called_a_verified_backup(
+    fresh_database, vault: Vault
+) -> None:
+    """A dump taken with the owner connection pointed at the wrong database.
+
+    It is a real archive and restores cleanly. Migrating it would then build a
+    whole empty Apollo schema, identical to a fresh install, with no model
+    call that fails to replay: everything a verified restore shows, and no
+    backup at all.
+    """
+    owner_dsn = fresh_database["owner_dsn"]
+    with backups.scratch_database(owner_dsn, f"apollo_other_{uuid.uuid4().hex[:8]}") as other:
+        backup = vault.back_up(other)
+
+    with pytest.raises(BackupError, match="does not hold an Apollo database"):
+        vault.verify(owner_dsn, backup)
+    assert _scratch_databases(owner_dsn) == []
+
+
 def test_a_backup_whose_content_does_not_match_its_own_record_is_not_verified(
     db: Database, owner_db: Database, fresh_database, service_factory, clock, vault: Vault
 ) -> None:

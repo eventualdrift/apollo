@@ -7,7 +7,9 @@ backup is a rumour."
 `verify_restore` performs one. It loads the archive into a throwaway database
 and then checks, in order:
 
-1. **It restores at all**, in one transaction, with every foreign key intact.
+1. **It restores at all**, in one transaction, with every foreign key intact,
+   and it is an Apollo database: a dump of some other database is refused
+   before anything is migrated into it.
 2. **Its migrations are the ones this code knows**, by checksum; any the
    backup predates are applied, as they would be on a real restore.
 3. **Its schema is the schema of a fresh install**: every column, constraint,
@@ -64,6 +66,11 @@ def verify_restore(admin_dsn: str, source: IO[bytes], *, now: datetime) -> Resto
     suffix = f"{now.strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(4)}"
     with backups.scratch_database(admin_dsn, f"apollo_restore_{suffix}") as restored:
         backups.restore(restored, source)
+        if not backups.holds_apollo(restored):
+            raise BackupError(
+                "the archive restored, but does not hold an Apollo database: "
+                "check which database the dump was taken from"
+            )
         applied = Database(restored).migrate()  # refuses a migration that has drifted
         with backups.scratch_database(admin_dsn, f"apollo_fresh_{suffix}") as fresh:
             Database(fresh).migrate()

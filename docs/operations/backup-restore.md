@@ -31,21 +31,42 @@ age-keygen -o apollo-backup.key      # prints the public key: age1...
 
 ## Taking a backup
 
-```sh
-umask 077                            # the file is yours alone
-set -o pipefail                      # a failed dump must not look like a backup
-export APOLLO_ADMIN_DSN="host=127.0.0.1 port=5432 user=apollo_owner dbname=apollo"
+Save this as `apollo-backup.sh`. It is the whole procedure:
 
-apollo backup dump \
-  | age -r "$APOLLO_BACKUP_RECIPIENT" -o "$BACKUP_DIR/$(apollo backup name age)"
+```sh
+#!/usr/bin/env bash
+# A backup that either completes or leaves nothing that looks like one.
+set -euo pipefail
+umask 077                            # the file is yours alone
+
+name="$(apollo backup name age)"
+apollo backup dump | age -r "$APOLLO_BACKUP_RECIPIENT" -o "$BACKUP_DIR/$name.partial"
+mv "$BACKUP_DIR/$name.partial" "$BACKUP_DIR/$name"
+apollo backup prune "$BACKUP_DIR"
+```
+
+```sh
+export APOLLO_ADMIN_DSN="host=127.0.0.1 port=5432 user=apollo_owner dbname=apollo"
+export APOLLO_BACKUP_RECIPIENT="age1..."  BACKUP_DIR=/srv/backups
+./apollo-backup.sh
 ```
 
 - The file is named for when it was taken and what encrypted it, for example
   `apollo-20261113T074856Z.dump.age`. Keep the name: retention reads the time from it.
+- **A backup gets that name only once the dump has succeeded.** The encryption tool cannot tell a
+  failed dump from a finished one: it encrypts whatever arrived, even nothing, and exits 0. So
+  the script writes to `.partial`, stops if the dump fails (`pipefail`), and renames only after.
+  A failed run leaves a `.partial` file, which `prune` lists as not a backup and never counts.
+- **Old backups are pruned only after a new one exists.** If backups stop working, the ones you
+  have are kept.
 - `pg_dump` takes one consistent snapshot, so Apollo may keep running. A turn in flight is backed
   up as started, and is marked interrupted the first time Apollo starts on a restored copy.
 - Connection details reach `pg_dump` through the environment, never its command line, where a
   password would be visible to every process on the machine.
+
+Do not shorten this to `apollo backup dump | age ... -o "$BACKUP_DIR/$(apollo backup name age)"`.
+Under `sh`, and under `cron`, that line exits 0 when the dump fails, and leaves a 200-byte file
+with a backup's name.
 
 **What is in it:** every Apollo table, including the audit stream and the record of which
 migrations were applied.
@@ -72,7 +93,7 @@ age -d -i apollo-backup.key "$BACKUP_DIR/apollo-20261113T074856Z.dump.age" \
 It restores the backup into a new scratch database on the same server, and then checks:
 
 1. **It restores at all:** one transaction, stopping at the first error, with every foreign key
-   intact.
+   intact. And it is an Apollo database: a dump taken from some other database is refused.
 2. **Its migrations are the ones this version of Apollo knows,** by checksum. Any the backup
    predates are applied, as they would be on a real restore, and named.
 3. **Its schema is the schema of a fresh install:** every column, constraint, trigger, function
@@ -134,15 +155,19 @@ apollo backup prune "$BACKUP_DIR"            # --dry-run to see first
 
 - It destroys every backup older than `backup_retention_days` (`apollo.toml`, default 30), going
   by the time in the file's name.
-- It leaves alone any file it does not recognise as an Apollo backup, and says so.
+- It leaves alone any file it does not recognise as an Apollo backup, and says so. That includes a
+  `.partial` file from a failed run, which is yours to delete.
 - It exits 1 if it finds a plaintext dump (`apollo-*.dump` with no encryption suffix), and names
   it. It does not remove it: that file is yours to encrypt or destroy.
 
-Run it wherever your backups are kept, on the same schedule as the backups:
+`apollo-backup.sh` runs it after each successful backup. Schedule the script, with its three
+variables set:
 
 ```cron
-17 3 * * *  cd /srv/apollo && apollo backup dump | age -r "$RECIPIENT" -o "/srv/backups/$(apollo backup name age)" && apollo backup prune /srv/backups
+17 3 * * *  cd /srv/apollo && ./apollo-backup.sh
 ```
+
+`cron` mails you a job's output when it prints any. A failed dump prints one line and exits 1.
 
 If you copy backups elsewhere, the copies are yours to expire too. Apollo can only prune a
 directory it is pointed at.
@@ -216,6 +241,20 @@ in it completed as `apollo_app`.
 
 **The dump.** It was encrypted before it was written anywhere, so no plaintext dump existed. The
 encrypted file, its key and both databases were destroyed when the test ended.
+
+**Checked again the same day, reviewing this procedure.** Two ways a backup could have looked
+good and not been one:
+
+- *The dump fails.* With the database unreachable, the one-line form this page first gave
+  (`apollo backup dump | age ... -o "$(apollo backup name age)" && apollo backup prune ...`, as a
+  cron line) exited 0 and left a 200-byte file with a backup's name, which `prune` reported as
+  kept. `apollo backup verify` refused that file (`pg_restore failed`). The page now gives
+  `apollo-backup.sh`: run the same way, it exited 1 and left only a `.partial` file; run with the
+  database up, it left one backup, which then ended `RESTORE VERIFIED`.
+- *The dump is of the wrong database.* A dump taken with the owner connection pointed at an empty
+  database restored cleanly, was migrated into an empty Apollo schema, and was reported
+  `RESTORE VERIFIED`. `verify` now refuses an archive that records no applied migration, before
+  it migrates anything. A test holds it.
 
 **Not yet done:** the same on Janu's own deployment, with his key and his backup location. That is
 his to run once the deployment exists. The automated tests

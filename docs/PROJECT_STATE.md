@@ -38,9 +38,10 @@ then ran as `apollo_app`, and every artefact was destroyed. **Not yet done:** th
 Janu's deployment, which does not exist yet.
 
 **Decisions made here (Claude):**
-- **Commands rather than a script.** §K.8 says the deliverable is a performed restore, "not a
-  backup script". The commands exist so the restore test is one line Janu can rerun, and so the
-  encryption rule is a mechanism. They are thin: `pg_dump`, `pg_restore`, and the checks.
+- **Commands, with the procedure in the document.** §K.8 says the deliverable is a performed
+  restore, "not a backup script". The commands exist so the restore test is one line Janu can
+  rerun, and so the encryption rule is a mechanism. They are thin: `pg_dump`, `pg_restore`, and
+  the checks. The document's `apollo-backup.sh` is six lines that call them in a safe order.
 - **Roles and grants are left out of the archive** (`--no-owner --no-privileges`). They belong
   to the server, and `apollo provision` recreates them, so a restore never depends on a role
   that happened to exist where the backup was taken.
@@ -50,6 +51,16 @@ Janu's deployment, which does not exist yet.
 - **The two PostgreSQL log settings are not in a backup** and must be made again after a real
   restore. `apollo doctor` reports them.
 - CI now installs `age`, so the restore tests run there instead of skipping.
+
+**Found in self-review, and fixed before merging** (#29 had no Codex review):
+- **A dump of the wrong database was reported `RESTORE VERIFIED`.** It restored cleanly, and
+  migrating it built an empty Apollo schema that passed every later check. `verify` now refuses
+  an archive that records no applied migration, before migrating anything. A test holds it.
+- **The one-line backup command this entry first documented could leave a false backup.** Under
+  `sh` or `cron`, a failed dump still exited 0 and left a 200-byte file with a backup's name,
+  because the encryption tool encrypts whatever arrives. Reproduced by hand. The procedure is
+  now a short script: write to `.partial`, rename only after the dump succeeds, prune only
+  after a new backup exists. Run both ways by hand, and recorded in the document.
 
 **Proven:** O.1/30, mechanically and by a performed restore. The tests also hold K.8's two
 boundaries: a backup from before a forget still contains the claim and one from after does not,

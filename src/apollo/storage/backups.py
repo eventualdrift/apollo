@@ -148,6 +148,19 @@ def scratch_database(admin_dsn: str, name: str) -> Iterator[str]:
             conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(identifier))
 
 
+def holds_apollo(dsn: str) -> bool:
+    """Whether the database at `dsn` records an applied Apollo migration.
+
+    A dump taken from some other database is a real archive and restores
+    cleanly. Migrating it would then build an empty Apollo schema that passes
+    every later check, so this is asked before anything is migrated.
+    """
+    with psycopg.connect(dsn) as conn:
+        if conn.execute("SELECT to_regclass('public.schema_migration')").fetchone() == (None,):
+            return False
+        return conn.execute("SELECT 1 FROM schema_migration LIMIT 1").fetchone() is not None
+
+
 def schema_objects(dsn: str) -> dict[str, list[str]]:
     """Every table column, constraint, trigger, function and index of the schema.
 
