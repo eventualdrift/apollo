@@ -42,6 +42,16 @@ def test_an_expiry_that_is_not_a_whole_number_of_days_is_refused(tmp_path, value
         _config(tmp_path, f"proposal_expiry_days = {value}")
 
 
+def test_backups_are_kept_thirty_days_unless_the_config_says_otherwise(tmp_path) -> None:
+    """Spec K.8: a retention window, default 30 days, after which backups are destroyed."""
+    assert _config(tmp_path).backup_retention_days == 30
+    assert load_config(REPO / "apollo.toml", ENV).backup_retention_days == 30
+    assert _config(tmp_path, "backup_retention_days = 14").backup_retention_days == 14
+    for value in ("0", "-3", "1.5", '"30"', "false"):
+        with pytest.raises(ConfigError, match="backup_retention_days"):
+            _config(tmp_path, f"backup_retention_days = {value}")
+
+
 def test_the_runtime_dsn_is_required_unless_the_caller_says_it_is_not(tmp_path) -> None:
     """`migrate` and `provision` connect as the owner and need no runtime connection."""
     path = tmp_path / "apollo.toml"

@@ -164,6 +164,58 @@ def replay_invocation(db: Database, invocation_id: uuid.UUID) -> Replay:
         return _replay(uow, row)
 
 
+@dataclass(frozen=True)
+class ReplaySummary:
+    """Every recorded invocation, replayed and counted. Ids and statuses only."""
+
+    #: (bundle status, render status) -> how many invocations replayed that way.
+    counts: Mapping[tuple[BundleStatus, RenderStatus], int]
+    #: Invocations whose sources are eval fixtures, by design not database rows.
+    fixture_sourced: int
+    #: Invocations that did not reproduce and that nothing on record explains:
+    #: a mismatch, or a source missing for a reason other than being a fixture.
+    unexplained: tuple[uuid.UUID, ...]
+
+    @property
+    def total(self) -> int:
+        return sum(self.counts.values()) + self.fixture_sourced
+
+    @property
+    def sound(self) -> bool:
+        return not self.unexplained
+
+
+def replay_all(db: Database) -> ReplaySummary:
+    """Replay every invocation in the database and say how each came out.
+
+    This is how a restored database proves itself: every hash an invocation
+    recorded is recomputed from the rows that were restored, so content that
+    did not survive intact shows up as a mismatch (spec K.8, H.4).
+    """
+    counts: dict[tuple[BundleStatus, RenderStatus], int] = {}
+    fixture_sourced = 0
+    unexplained: list[uuid.UUID] = []
+    with unit_of_work(db, expect_audit=False) as uow:
+        ids = [row["id"] for row in uow.execute(
+            "SELECT id FROM model_invocation ORDER BY started_at, id").fetchall()]
+        repo = InvocationRepository(uow)
+        for invocation_id in ids:
+            row = repo.get(invocation_id)
+            assert row is not None
+            found = _replay(uow, row)
+            if found.unavailable and all(
+                source.reason is Reason.NOT_A_ROW for source in found.unavailable
+            ):
+                fixture_sourced += 1
+                continue
+            key = (found.bundle_status, found.render_status)
+            counts[key] = counts.get(key, 0) + 1
+            if (found.bundle_status in {BundleStatus.MISMATCH, BundleStatus.SOURCE_MISSING}
+                    or found.render_status is RenderStatus.MISMATCH):
+                unexplained.append(invocation_id)
+    return ReplaySummary(counts, fixture_sourced, tuple(unexplained))
+
+
 # -- one invocation ----------------------------------------------------------------------
 
 
@@ -375,7 +427,9 @@ __all__ = [
     "RenderStatus",
     "Replay",
     "ReplayNotFoundError",
+    "ReplaySummary",
     "UnavailableSource",
+    "replay_all",
     "replay_invocation",
     "replay_turn",
 ]

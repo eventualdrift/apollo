@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TextIO
 
 from apollo.brains.registry import BrainRegistry
+from apollo.cli import backup as backup_cli
 from apollo.cli import memory as memory_cli
 from apollo.cli import proposal as proposal_cli
 from apollo.cli import turn as turn_cli
@@ -85,7 +86,7 @@ def _read_runtime_password(
 
 
 #: The commands that run as the database owner and need no runtime connection.
-OWNER_COMMANDS = frozenset({"migrate", "provision"})
+OWNER_COMMANDS = frozenset({"migrate", "provision", "backup"})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,6 +216,7 @@ def _dispatch(argv: list[str] | None = None) -> int:
     memory_cli.add_parser(sub)
     proposal_cli.add_parser(sub)
     turn_cli.add_parser(sub)
+    backup_cli.add_parser(sub)
 
     args = parser.parse_args(argv)
     if (
@@ -228,6 +230,14 @@ def _dispatch(argv: list[str] | None = None) -> int:
     owner_only = args.command in OWNER_COMMANDS
     config = load_config(require_database_dsn=False) if owner_only else load_config()
     configure_logging(config.log_level)
+
+    if args.command == "backup":
+        return backup_cli.run(
+            args,
+            memory_cli.Terminal(sys.stdin, sys.stdout, sys.stderr, lambda: datetime.now(UTC)),
+            admin_dsn=config.admin_dsn,
+            retention_days=config.backup_retention_days,
+        )
 
     if args.command in OWNER_COMMANDS:
         if not config.admin_dsn:

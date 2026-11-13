@@ -48,6 +48,12 @@ jobs:
           sudo pg_ctlcluster 16 main reload
           psql "host=127.0.0.1 user=postgres dbname=postgres" -c 'select version()'
 
+      # The backup tests perform a real restore: pg_dump and pg_restore come
+      # with the runner's PostgreSQL, and `age` encrypts the dump in between.
+      # Without it those tests skip, and `-rs` below says so.
+      - name: Install age
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
       - name: Tests
         env:
           APOLLO_TEST_ADMIN_DSN: "host=127.0.0.1 user=postgres dbname=postgres"

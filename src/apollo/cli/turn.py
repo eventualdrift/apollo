@@ -24,6 +24,8 @@ from apollo.core.replay import (
     RenderStatus,
     Replay,
     ReplayNotFoundError,
+    ReplaySummary,
+    replay_all,
     replay_turn,
 )
 from apollo.storage.db import Database
@@ -37,10 +39,15 @@ class ConversationNotFound(LookupError):
     """No conversation has that id."""
 
 
+class NothingToReplay(ValueError):
+    """Neither a turn id nor `--all` was given, or both were."""
+
+
 _HINTS: dict[type[Exception], str] = {
     InvalidId: "that is not an id",
     ConversationNotFound: "no conversation has that id",
     ReplayNotFoundError: "no turn has that id (see `apollo turn list <conversation>`)",
+    NothingToReplay: "give one turn id, or --all",
 }
 
 #: What each status means, in the words of the specification.
@@ -72,7 +79,9 @@ def add_parser(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None
         help="rebuild each model call of a turn from its record and verify it; exits 1 if "
              "anything does not reproduce and was not deliberately forgotten",
     )
-    p_replay.add_argument("turn")
+    p_replay.add_argument("turn", nargs="?")
+    p_replay.add_argument("--all", action="store_true",
+                          help="replay every recorded model call and print the counts")
     p_replay.add_argument("--context", action="store_true",
                           help="also print each rebuilt request (conversation and memory text)")
 
@@ -113,6 +122,13 @@ def _list(args: argparse.Namespace, db: Database, term: Terminal) -> int:
 
 
 def _replay(args: argparse.Namespace, db: Database, term: Terminal) -> int:
+    if args.all == (args.turn is not None):
+        raise NothingToReplay()
+    if args.all:
+        summary = replay_all(db)
+        for line in summarise(summary):
+            print(line, file=term.stdout)
+        return 0 if summary.sound else 1
     replays = replay_turn(db, _id(args.turn))
     if not replays:
         print("that turn made no model call, so there is nothing to replay", file=term.stderr)
@@ -135,6 +151,19 @@ def reproduced(replay: Replay) -> bool:
         replay.bundle_status in {BundleStatus.VERIFIED, BundleStatus.SOURCE_REDACTED}
         and replay.render_status is not RenderStatus.MISMATCH
     )
+
+
+def summarise(summary: ReplaySummary) -> list[str]:
+    """Every recorded model call, replayed and counted. Ids and statuses only."""
+    lines = [f"{summary.total} recorded model call(s)"]
+    for (bundle, render), count in sorted(summary.counts.items()):
+        lines.append(f"  {count:>6}  bundle {bundle}, render {render}")
+    if summary.fixture_sourced:
+        lines.append(f"  {summary.fixture_sourced:>6}  eval calls, whose sources are case "
+                     "files and not rows")
+    for invocation_id in summary.unexplained:
+        lines.append(f"  DOES NOT REPRODUCE: invocation {invocation_id}")
+    return lines
 
 
 def describe(replay: Replay) -> list[str]:

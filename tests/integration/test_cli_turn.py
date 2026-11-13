@@ -149,6 +149,46 @@ def test_a_failed_attempt_shows_what_it_would_have_sent(apollo, monkeypatch) -> 
     assert f"The code is {SECRET}." in out
 
 
+def test_replay_all_counts_every_recorded_call_and_prints_no_text(apollo) -> None:
+    """What a restored database is checked with (docs/operations/backup-restore.md)."""
+    assert apollo("turn", "replay", "--all") == (0, "0 recorded model call(s)\n", "")
+    status, out, _ = apollo("memory", "add", "--scope", "user", "--kind", "fact",
+                            stdin=f"locker\nJanu's locker code is {SECRET}.\n")
+    memory_id = out.strip()
+    _said(apollo, f"Remember that my locker code is {SECRET}.")
+    _said(apollo, "What is my locker code?")
+    assert apollo("turn", "replay", "--all") == (
+        0, "3 recorded model call(s)\n       3  bundle VERIFIED, render VERIFIED\n", "")
+
+    apollo("memory", "forget", memory_id, "--yes")
+    status, out, err = apollo("turn", "replay", "--all")
+    assert status == 0  # forgotten sources are honest gaps
+    assert out.splitlines()[0] == "3 recorded model call(s)"
+    assert "bundle SOURCE_REDACTED, render NOT_ATTEMPTED" in out
+    assert SECRET not in out + err
+
+
+def test_replay_all_exits_1_and_names_a_call_that_does_not_reproduce(
+    apollo, owner_db: Database
+) -> None:
+    _said(apollo, "Hello.")
+    with owner_db.connect() as conn, conn.cursor() as cur:
+        cur.execute("ALTER TABLE message DISABLE TRIGGER USER")
+        cur.execute("UPDATE message SET content = 'Hullo.' WHERE role = 'user'")
+        cur.execute("ALTER TABLE message ENABLE TRIGGER USER")
+        cur.execute("SELECT id FROM model_invocation")
+        [invocation] = cur.fetchall()
+    status, out, _ = apollo("turn", "replay", "--all")
+    assert status == 1
+    assert f"DOES NOT REPRODUCE: invocation {invocation['id']}" in out and "Hullo" not in out
+
+
+def test_replay_takes_one_turn_or_all_and_not_both(apollo) -> None:
+    for argv in (("replay",), ("replay", str(uuid.UUID(int=7)), "--all")):
+        assert apollo("turn", *argv) == (
+            1, "", "turn replay: NothingToReplay — give one turn id, or --all\n")
+
+
 @pytest.mark.parametrize(("argv", "said"), [
     (("replay", "not-an-id"), "turn replay: InvalidId — that is not an id\n"),
     (("list", "not-an-id"), "turn list: InvalidId — that is not an id\n"),

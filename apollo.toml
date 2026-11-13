@@ -9,6 +9,9 @@ orphan_window_seconds = 900
 identity_token_cap = 4000
 # A memory proposal you neither save nor ignore expires after this many days.
 proposal_expiry_days = 7
+# Backups older than this are destroyed by `apollo backup prune`. Something you
+# told Apollo to forget can still be in a backup until then, and not after.
+backup_retention_days = 30
 
 [brains]
 # Code refers to aliases, never to model names.

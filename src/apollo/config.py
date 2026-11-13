@@ -76,6 +76,9 @@ class Config:
     identity_token_cap: int = 4000
     #: A pending memory proposal older than this expires and is never revived.
     proposal_expiry_days: int = 7
+    #: Backups older than this are destroyed (spec K.8). It bounds how long
+    #: forgotten content can outlive its deletion.
+    backup_retention_days: int = 30
 
     def provider_for_alias(self, alias: str) -> ProviderConfig:
         short = alias.removeprefix("brain.")
@@ -140,13 +143,15 @@ def load_config(
         identity_dir=Path(core.get("identity_dir", "identity")),
         orphan_window_seconds=int(core.get("orphan_window_seconds", 900)),
         identity_token_cap=int(core.get("identity_token_cap", 4000)),
-        proposal_expiry_days=_positive_days(core.get("proposal_expiry_days", 7)),
+        proposal_expiry_days=_positive_days(core, "proposal_expiry_days", 7),
+        backup_retention_days=_positive_days(core, "backup_retention_days", 30),
     )
 
 
-def _positive_days(value: object) -> int:
+def _positive_days(core: dict[str, object], key: str, default: int) -> int:
+    value = core.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise ConfigError("core.proposal_expiry_days must be a whole number of days, at least 1")
+        raise ConfigError(f"core.{key} must be a whole number of days, at least 1")
     return value
 
 
