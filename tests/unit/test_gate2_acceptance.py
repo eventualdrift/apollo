@@ -415,6 +415,8 @@ def test_offline_provenance_cannot_be_presented_as_real(evidence, field, value):
     evidence.candidate[field] = value
     assert not evaluate(evidence).real_model_evidence
     assert not evaluate(evidence).passed
+    # Whichever field gives it away, it is reported as what it is (Codex, PR #32).
+    assert evaluate(evidence).status is Gate2Status.INFRASTRUCTURE_ONLY
 
 
 def test_offline_model_identifier_and_fake_incumbent_fail(evidence):
@@ -422,6 +424,8 @@ def test_offline_model_identifier_and_fake_incumbent_fail(evidence):
         for s in c["samples"]:
             s["model_identifier"] = "fake:replay"
     assert not evaluate(evidence).real_model_evidence
+    assert evaluate(evidence).status is Gate2Status.INFRASTRUCTURE_ONLY
+    assert baseline(evidence).status is Gate2Status.INFRASTRUCTURE_ONLY
     evidence.incumbent["adapter_key"] = "fake"
     assert not evaluate(evidence).comparison_valid
 
@@ -844,15 +848,20 @@ def test_a_first_baseline_is_never_offline_fake_or_replayed_evidence(evidence, f
     evidence.candidate[field] = value
     report = baseline(evidence, review=review)
     assert not report.passed and not report.real_model_evidence
-    assert report.status in (Gate2Status.INFRASTRUCTURE_ONLY, Gate2Status.FAILED)
+    # Reported as what it is, whichever field gives it away (Codex, PR #32).
+    assert report.status is Gate2Status.INFRASTRUCTURE_ONLY
     assert report.review_template is None  # nothing to designate
 
 
 def test_a_first_baseline_needs_the_whole_current_corpus(evidence):
     review = designated(evidence)
     del evidence.candidate["cases"][0]
-    assert not baseline(evidence, review=review).passed
+    partial = baseline(evidence, review=review)
+    # A real run that is incomplete has failed. It is not relabelled as offline.
+    assert not partial.passed and partial.status is Gate2Status.FAILED
     assert not baseline(evidence, candidate={"cases": []}, review=review).passed
+    malformed = baseline(evidence, candidate={"cases": [{"not": "a run"}]}, review=review)
+    assert malformed.status is Gate2Status.FAILED
 
 
 def test_a_first_baseline_review_is_bound_to_the_run_that_was_read(evidence):

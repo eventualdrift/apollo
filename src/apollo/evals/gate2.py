@@ -37,7 +37,12 @@ from apollo.core.identity import Identity, IdentityLoader
 from apollo.errors import ApolloError
 from apollo.evals import review as review_module
 from apollo.evals.diff import diff_runs
-from apollo.evals.evidence import DEFAULT_CASES_DIR, document_hash, validate_run
+from apollo.evals.evidence import (
+    DEFAULT_CASES_DIR,
+    EvidenceValidation,
+    document_hash,
+    validate_run,
+)
 from apollo.evals.loader import load_cases
 from apollo.evals.models import PersonaCase
 
@@ -386,12 +391,7 @@ def evaluate_gate2(
     if template is None:
         blocking.append("human review cannot be validated without valid comparable evidence")
 
-    if not run.get("cases"):
-        status = Gate2Status.NOT_RUN
-    elif adapter_key in OFFLINE_ADAPTER_KEYS or run.get("evidence_kind") == "offline":
-        status = Gate2Status.INFRASTRUCTURE_ONLY
-    else:
-        status = Gate2Status.FAILED if blocking else Gate2Status.PASSED
+    status = _status(run, adapter_key, evidence, blocking)
 
     return Gate2Report(
         brain_alias=brain_alias,
@@ -504,12 +504,7 @@ def evaluate_first_baseline(
     else:
         blocking.append("human review cannot be validated without valid candidate evidence")
 
-    if not run.get("cases"):
-        status = Gate2Status.NOT_RUN
-    elif adapter_key in OFFLINE_ADAPTER_KEYS or run.get("evidence_kind") == "offline":
-        status = Gate2Status.INFRASTRUCTURE_ONLY
-    else:
-        status = Gate2Status.FAILED if blocking else Gate2Status.PASSED
+    status = _status(run, adapter_key, evidence, blocking)
 
     return Gate2Report(
         brain_alias=brain_alias,
@@ -543,6 +538,29 @@ def evaluate_first_baseline(
         ),
         first_baseline=True,
     )
+
+
+def _status(
+    run: dict[str, Any], adapter_key: str, evidence: EvidenceValidation, blocking: list[str]
+) -> Gate2Status:
+    """NOT_RUN for nothing; INFRASTRUCTURE_ONLY for known offline evidence; else pass or fail.
+
+    Offline evidence is recognised three ways: by its adapter, by what the run
+    declares, and by any fake, offline or replay marker the validator found in
+    a run that is otherwise well-formed (its brain alias, its provider, a
+    sample's model identifier). Whichever gives it away, the run is reported
+    as what it is rather than as a real run that failed. A run that is
+    malformed says nothing about its provenance, and has simply failed.
+    """
+    if not run.get("cases"):
+        return Gate2Status.NOT_RUN
+    if (
+        adapter_key in OFFLINE_ADAPTER_KEYS
+        or run.get("evidence_kind") == "offline"
+        or (evidence.document is not None and not evidence.real_model)
+    ):
+        return Gate2Status.INFRASTRUCTURE_ONLY
+    return Gate2Status.FAILED if blocking else Gate2Status.PASSED
 
 
 def compare_bundle_hashes(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
