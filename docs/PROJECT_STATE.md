@@ -10,6 +10,72 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): replay — step 13 is built
+
+The entries below are unchanged. Step 13 opens milestone 4.
+
+**What replay does (§H.4, ADR-0007):** `apollo.core.replay`, reached from
+`apollo turn replay <turn>`. Per invocation, from the recorded manifest and the rows it names:
+- rebuilds the bundle with the compiler texts and the estimator the invocation recorded, and
+  compares `context_bundle_hash`;
+- renders it with the recorded `adapter_key` and `render_version`, and compares
+  `rendered_prompt_hash`;
+- reports `bundle_status` (`VERIFIED`, `MISMATCH`, `SOURCE_REDACTED`, `SOURCE_MISSING`) and
+  `render_status` (`VERIFIED`, `MISMATCH`, `RENDERER_UNAVAILABLE`, `NOT_ATTEMPTED`), and names
+  every source it could not use, each with a closed reason.
+- It only reads. It writes no row and no audit event, and logs no text.
+
+**How a block's content is found, and never substituted:**
+- `IDENTITY` from `identity_version` by content hash; `CONVERSATION_RECENT`, `USER_MESSAGE` and
+  `SOURCE_MESSAGE` from the `message` row; `MEMORY` from the `memory` row its entry names and
+  from nothing else. A tombstoned row stops the rebuild: no bundle is built around the gap.
+- Rules and the failure notice are the compiler's fixed text for the recorded version.
+- **The `compiler-v2` retrieval notice is rebuilt from the turn's retrieval record:** the lexical
+  query text and the three per-strategy counts from `turn_retrieval`, the distinct pinned and
+  lexical results from `turn_retrieval_result`, and how many matches were shown from the
+  manifest (`match` on each included `MEMORY` entry). Without that record the status is
+  `SOURCE_MISSING` with reason `no_retrieval_record`.
+- A block's tokens are counted again and compared with its manifest entry, so a changed source
+  or a drifted estimator is a `MISMATCH` that names the field, before the hash is even compared.
+
+**A code change the spec required: a render version now names the system-role placement.**
+ADR-0002 lists "system-role placement" among what `render_version` identifies. The code did not:
+an adapter configured with `supports_system_role = false` rendered differently under the same
+`chat-vN`, so replay could not have reproduced its request from the record. Such an adapter now
+records `chat-v3-nosystem`. The default is unchanged (`chat-v3`).
+- No recorded invocation is known to have used a provider without a system role: the M2 runs
+  and the frozen ablation renderer all used one. If one exists on Janu's machine from before
+  this change, it will replay as a render `MISMATCH` with its bundle `VERIFIED`.
+
+**Readings made here (Claude):**
+- **An unimplemented compiler version or estimator is `SOURCE_MISSING`**, reason
+  `not_implemented`. The spec has no bundle status of its own for it. Both versions and the one
+  estimator are still implemented, so this does not occur today.
+- **A redaction is reported even beside an unexplained gap:** the status is `SOURCE_REDACTED`,
+  and each unavailable ref carries its own reason.
+- **An invocation that never completed has no prompt hash**, so its render is `NOT_ATTEMPTED`.
+  Its request is still rebuilt and returned, marked as unverified: that is what makes a failed
+  attempt and its retry comparable (§H.4).
+- **Eval turns:** a persona case's history and input carry fixture references by design, so
+  replay from the database reports them `SOURCE_MISSING`, reason `not_a_database_row`. Gate 2
+  already rebuilds eval bundles from the run record.
+- **Exit status of `apollo turn replay`:** 1 for a `MISMATCH` or a `SOURCE_MISSING`, 0
+  otherwise. A forgotten source, an incomplete call and a retired renderer are honest gaps.
+- `apollo turn list <conversation>` was added, since a turn id is otherwise hard to come by.
+
+**Proven on `brain.fake` (mechanical):** O.1/9 (verified on both axes; `SOURCE_REDACTED` naming
+the memory after a tombstone, with a message elsewhere still saying the same thing and nothing
+recreated), O.1/10 (a failed attempt's bundle and request rebuilt), O.1/17 (a corrected memory's
+old row still replays `VERIFIED`), and the replay half of O.1/19 (a turn that only dropped a
+memory keeps its hashes and replays after that memory is forgotten). Also: `compiler-v1`,
+`chat-v1`, `chat-v2` and both system-role placements replay; a retired render version and an
+unknown adapter give `RENDERER_UNAVAILABLE`; a changed source gives `MISMATCH`.
+Every persona case rebuilds to its compiled bundle under both compiler versions.
+
+**Remaining work, in order:** step 14 failure behaviour and redaction (every row of §L;
+O.1/25, 27), step 15 backup and restore (O.1/30), step 16 the acceptance record against
+O.1/1-30, step 17 the product trial (Janu's).
+
 ## Update (2026-11-13): memory proposals — step 12 is built; its model run is not
 
 The entries below are unchanged. PR #25 (memory in the reply) is merged. With this, milestone 3

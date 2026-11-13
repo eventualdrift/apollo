@@ -67,6 +67,11 @@ what they measured, and are not comparable with a new run. Spec J.5 asks for the
 a compiler version change. That run needs a real model and has not been made; see
 [`../PROJECT_STATE.md`](../PROJECT_STATE.md).
 
+A provider bound with `supports_system_role = false` is sent the policy region as its first user
+message, which is a different request. It records `chat-v3-nosystem`, so a run against it is
+never compared as if it had been rendered like the others. The default, and every run so far,
+uses a system role and records the plain `chat-v3`.
+
 ## Comparing runs
 
 ```sh

@@ -364,13 +364,20 @@ def _memory_block(memory: MemoryItem, estimator: TokenEstimator) -> ContextBlock
     ref = manifest_source_ref(memory.memory_id)
     block = _block(BlockType.MEMORY, TrustTier.CURATED, Region.DATA, MANIFEST_SOURCE_KIND, ref,
                    memory.content, estimator)
-    # The header is sent too, so it is counted against the memory budget.
-    header = " ".join([ref, *(f"{key}={value}" for key, value in memory.attributes)])
     return replace(
         block,
         attributes=memory.attributes,
-        token_estimate=block.token_estimate + estimator.count(header),
+        token_estimate=block.token_estimate
+        + memory_header_tokens(ref, memory.attributes, estimator),
     )
+
+
+def memory_header_tokens(
+    ref: str, attributes: tuple[tuple[str, str], ...], estimator: TokenEstimator
+) -> int:
+    """A MEMORY block's fence header is sent too, so it counts against the memory budget."""
+    header = " ".join([ref, *(f"{key}={value}" for key, value in attributes)])
+    return estimator.count(header)
 
 
 def _compile_memory_proposal(req: CompileRequest) -> ContextBundle:

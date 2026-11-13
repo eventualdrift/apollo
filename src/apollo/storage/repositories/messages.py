@@ -83,6 +83,14 @@ class MessageRepository:
         rows: list[dict[str, Any]] = cur.fetchall()
         return list(reversed(rows))
 
+    def get(self, message_id: uuid.UUID) -> dict[str, Any] | None:
+        """One message by id: for replay, which rebuilds a block from the row it names."""
+        cur = self._uow.execute(
+            "SELECT id, conversation_id, role, content FROM message WHERE id = %s", (message_id,)
+        )
+        row: dict[str, Any] | None = cur.fetchone()
+        return row
+
     def transcript(self, conversation_id: uuid.UUID) -> list[dict[str, Any]]:
         """Everything, including `system_note`. For the human-visible transcript only."""
         cur = self._uow.execute(

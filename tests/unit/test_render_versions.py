@@ -31,7 +31,10 @@ from apollo.brains.base import (
     CHAT_RENDER_VERSION,
     CHAT_RENDER_VERSIONS,
     UnknownRenderVersionError,
+    render_as,
     render_chat,
+    render_version_for,
+    split_render_version,
 )
 from apollo.config import MODE_BENCHMARK, ProviderConfig
 from apollo.context.budget import Budget
@@ -176,6 +179,52 @@ def test_an_adapter_renders_with_the_version_it_declares() -> None:
 def test_an_unknown_render_version_is_refused() -> None:
     with pytest.raises(UnknownRenderVersionError, match="chat-v0"):
         render_chat(_failed_turn_bundle(), render_version="chat-v0")
+
+
+# -- a render version names the system-role placement too (ADR-0002) ----------
+
+
+def test_a_provider_without_a_system_role_records_a_different_render_version() -> None:
+    """The policy region moves to a user message: different bytes, so a different version."""
+    assert render_version_for(supports_system_role=True) == "chat-v3"
+    assert render_version_for(supports_system_role=False) == "chat-v3-nosystem"
+    assert render_version_for(supports_system_role=False, chat_version="chat-v1") == (
+        "chat-v1-nosystem")
+    for version in CHAT_RENDER_VERSIONS:
+        assert split_render_version(version) == (version, True)
+        assert split_render_version(f"{version}-nosystem") == (version, False)
+    for unknown in ("chat-v0", "chat-v0-nosystem", "chat-v3-other", "", "-nosystem"):
+        assert split_render_version(unknown) is None
+
+
+def test_render_as_reproduces_exactly_what_each_version_and_placement_sent() -> None:
+    bundle = _failed_turn_bundle()
+    for version in CHAT_RENDER_VERSIONS:
+        assert render_as(bundle, version) == render_chat(bundle, render_version=version)
+        without = render_as(bundle, f"{version}-nosystem")
+        assert without == render_chat(bundle, supports_system_role=False,
+                                      render_version=version)
+        assert without.messages[0].role == "user"
+        assert without.prompt_hash != render_as(bundle, version).prompt_hash
+    with pytest.raises(UnknownRenderVersionError, match="chat-v0"):
+        render_as(bundle, "chat-v0")
+
+
+def test_the_real_model_adapter_records_the_version_it_renders_with() -> None:
+    from apollo.brains.openai_compatible import OpenAICompatibleBrain
+
+    def brain(**options):  # type: ignore[no-untyped-def]
+        return OpenAICompatibleBrain(key="local", base_url="http://127.0.0.1:1/v1",
+                                     model="m", max_context=9024, **options)
+
+    bundle = _failed_turn_bundle()
+    with_system, without = brain(), brain(supports_system_role=False)
+    assert (with_system.render_version, without.render_version) == (
+        "chat-v3", "chat-v3-nosystem")
+    assert with_system.render(bundle) == render_as(bundle, "chat-v3")
+    assert without.render(bundle) == render_as(bundle, "chat-v3-nosystem")
+    # One instance's setting does not leak into the class or another instance.
+    assert OpenAICompatibleBrain.render_version == brain().render_version == "chat-v3"
 
 
 # -- chat-v1 stays byte-stable for invocations recorded before the bump -------

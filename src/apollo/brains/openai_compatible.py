@@ -31,7 +31,8 @@ from apollo.brains.base import (
     GenerationParams,
     ModelCapabilities,
     RenderedRequest,
-    render_chat,
+    render_as,
+    render_version_for,
 )
 from apollo.config import ProviderConfig
 from apollo.context.bundle import ContextBundle
@@ -61,7 +62,9 @@ class OpenAICompatibleBrain:
 
     adapter_key = "openai_compatible"
     #: The bundle-to-request transformation is the shared chat rendering, so it
-    #: carries the shared render version. A change to either bumps both.
+    #: carries the shared render version. A change to either bumps both. An
+    #: instance configured without a system role renders differently and
+    #: records a different version (set in `__init__`).
     render_version = CHAT_RENDER_VERSION
 
     def __init__(
@@ -82,6 +85,7 @@ class OpenAICompatibleBrain:
         self._api_key = api_key
         self._timeout = timeout_seconds
         self._supports_system_role = supports_system_role
+        self.render_version = render_version_for(supports_system_role=supports_system_role)
 
     @classmethod
     def from_config(cls, provider: ProviderConfig) -> OpenAICompatibleBrain:
@@ -132,11 +136,7 @@ class OpenAICompatibleBrain:
 
     def render(self, bundle: ContextBundle) -> RenderedRequest:
         """The shared four-region chat rendering, verified on every call."""
-        return render_chat(
-            bundle,
-            supports_system_role=self._supports_system_role,
-            render_version=self.render_version,
-        )
+        return render_as(bundle, self.render_version)
 
     def generate(self, req: RenderedRequest, params: GenerationParams) -> Generation:
         payload: dict[str, Any] = {

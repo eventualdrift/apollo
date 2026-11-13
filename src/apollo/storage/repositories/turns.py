@@ -92,6 +92,19 @@ class TurnRepository:
         row: dict[str, Any] | None = cur.fetchone()
         return row
 
+    def for_conversation(self, conversation_id: uuid.UUID) -> list[dict[str, Any]]:
+        """A conversation's turns, oldest first, each with how many model calls it made."""
+        cur = self._uow.execute(
+            "SELECT t.id, t.status, t.error_kind, t.started_at, m.seq AS request_seq,"
+            "       (SELECT count(*) FROM model_invocation i WHERE i.turn_id = t.id)"
+            "         AS invocations"
+            "  FROM turn t JOIN message m ON m.id = t.request_message_id"
+            " WHERE t.conversation_id = %s ORDER BY m.seq",
+            (conversation_id,),
+        )
+        rows: list[dict[str, Any]] = cur.fetchall()
+        return rows
+
     def find_by_request_message(self, message_id: uuid.UUID) -> dict[str, Any] | None:
         cur = self._uow.execute("SELECT * FROM turn WHERE request_message_id = %s", (message_id,))
         row: dict[str, Any] | None = cur.fetchone()

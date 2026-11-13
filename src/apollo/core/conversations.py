@@ -9,7 +9,11 @@ from typing import Any
 from apollo.audit.events import Actor, AuditEvent, EventType
 from apollo.config import MODE_BENCHMARK, MODE_PERSONAL
 from apollo.storage.db import Database
-from apollo.storage.repositories import ConversationRepository, MessageRepository
+from apollo.storage.repositories import (
+    ConversationRepository,
+    MessageRepository,
+    TurnRepository,
+)
 from apollo.storage.unit_of_work import unit_of_work
 
 
@@ -59,3 +63,12 @@ def transcript(db: Database, conversation_id: uuid.UUID) -> list[dict[str, Any]]
     """The human-visible transcript, including `system_note` rows."""
     with unit_of_work(db, expect_audit=False) as uow:
         return MessageRepository(uow).transcript(conversation_id)
+
+
+def turns(db: Database, conversation_id: uuid.UUID) -> list[dict[str, Any]]:
+    """A conversation's turns, oldest first: id, status, and how many model calls each made.
+
+    The ids are what `apollo turn replay` takes. No message text is returned.
+    """
+    with unit_of_work(db, expect_audit=False) as uow:
+        return TurnRepository(uow).for_conversation(conversation_id)
