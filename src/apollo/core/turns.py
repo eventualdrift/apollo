@@ -387,19 +387,22 @@ class TurnService:
             return self._fail_turn(conversation_id, turn_id, exc, turn_started)
         record_for_turn(self._db, turn_id=turn_id, found=found, bundle=bundle, now=now)
 
-        try:
-            outcome, attempts = self._generate_with_retry(
-                conversation_id=conversation_id,
-                turn_id=turn_id,
-                brain=brain,
-                provider_key=provider.key,
-                bundle=bundle,
-            )
-        except InvocationRefusedError as exc:
+        outcome, attempts, refused = self._generate_with_retry(
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            brain=brain,
+            provider_key=provider.key,
+            bundle=bundle,
+        )
+        if outcome is None:
             # A memory in the bundle was forgotten between the search and the
             # call. The database refuses to record an invocation that includes
-            # it, so nothing was sent; the turn fails rather than hangs.
-            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
+            # it, so that call was never made; the turn fails rather than hangs.
+            # Any attempt already recorded before the refusal is still reported.
+            assert refused is not None
+            return self._fail_turn(
+                conversation_id, turn_id, refused, turn_started, invocation_ids=attempts
+            )
 
         if not outcome.ok:
             assert outcome.error is not None
@@ -431,26 +434,38 @@ class TurnService:
         brain: Brain,
         provider_key: str,
         bundle: ContextBundle,
-    ) -> tuple[invocations.InvocationOutcome, tuple[uuid.UUID, ...]]:
+    ) -> tuple[
+        invocations.InvocationOutcome | None, tuple[uuid.UUID, ...], InvocationRefusedError | None
+    ]:
+        """The outcome of the last attempt, and every attempt recorded.
+
+        The outcome is None only when the database refused to record an
+        attempt (the third value says why). Attempts recorded before that are
+        still returned: each has a row, and the turn's result must not say
+        otherwise.
+        """
         params = GenerationParams()
         attempts: list[uuid.UUID] = []
         retry_of: uuid.UUID | None = None
         outcome = None
         for attempt in range(MAX_TRANSPORT_RETRIES + 1):
             now = self._clock()
-            invocation_id = invocations.open_invocation(
-                self._db,
-                turn_id=turn_id,
-                conversation_id=conversation_id,
-                purpose="reply",
-                brain=brain,
-                brain_alias=self._brain_alias,
-                provider_key=provider_key,
-                bundle=bundle,
-                params=params,
-                now=now,
-                retry_of=retry_of,
-            )
+            try:
+                invocation_id = invocations.open_invocation(
+                    self._db,
+                    turn_id=turn_id,
+                    conversation_id=conversation_id,
+                    purpose="reply",
+                    brain=brain,
+                    brain_alias=self._brain_alias,
+                    provider_key=provider_key,
+                    bundle=bundle,
+                    params=params,
+                    now=now,
+                    retry_of=retry_of,
+                )
+            except InvocationRefusedError as refused:
+                return None, tuple(attempts), refused
             attempts.append(invocation_id)
             outcome = invocations.invoke(
                 self._db,
@@ -473,7 +488,7 @@ class TurnService:
             log.info("invocation.retrying", extra={"turn_id": str(turn_id),
                                                    "retry_of": str(invocation_id)})
         assert outcome is not None
-        return outcome, tuple(attempts)
+        return outcome, tuple(attempts), None
 
     def _complete_turn(
         self,

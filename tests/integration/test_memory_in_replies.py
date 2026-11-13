@@ -454,3 +454,33 @@ def test_a_memory_forgotten_between_the_search_and_the_call_is_never_sent(
                    result.turn_id)
     assert note["content"] == SYSTEM_NOTE_INTERNAL
     assert _rows(db, "SELECT 1 FROM model_invocation WHERE turn_id = %s", result.turn_id) == []
+
+
+def test_an_attempt_already_made_is_reported_when_its_retry_is_refused(
+    db: Database, service_factory, clock
+) -> None:
+    """The first attempt failed in transport and is recorded; then the memory is forgotten.
+
+    The retry's invocation is refused, so no second call is made. The turn's
+    result still names the attempt that did happen: an invocation row exists
+    for it, and a result claiming none would contradict the record.
+    """
+    from apollo.errors import BrainTransportError
+
+    memory_id = _remember(db, clock, "Janu's door code is 4123.", subject="door code")
+
+    class FailsThenForgets(RecordingBrain):
+        def generate(self, req: RenderedRequest, params: GenerationParams) -> Generation:
+            self.requests.append(req)
+            memories.tombstone_memory(db, memory_id, now=clock())
+            raise BrainTransportError(provider_error_type="connection_failed")
+
+    brain = FailsThenForgets()
+    result, _ = _ask(db, service_factory, clock, "What is my door code?", brain=brain)
+
+    assert len(brain.requests) == 1  # the refused retry never reached the brain
+    assert result.status == "failed" and result.error_kind == "internal"
+    recorded = _rows(db, "SELECT id, status, error_kind FROM model_invocation WHERE turn_id = %s",
+                     result.turn_id)
+    assert [(r["status"], r["error_kind"]) for r in recorded] == [("failed", "brain_unavailable")]
+    assert result.invocation_ids == (recorded[0]["id"],)
