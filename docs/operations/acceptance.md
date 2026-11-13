@@ -393,8 +393,9 @@ Each title is the spec's. Under it: what holds it, and what is open.
 None of these blocked the work so far. The first two block the gates.
 
 1. **A model to run against.** Steps 1 to 6 need the model server. If you would rather Claude
-   ran them, it needs a base URL the cloud session can reach, the model id, the context size,
-   and a key if the server wants one.
+   ran them, it needs a base URL the cloud session can reach, the model id and the context size.
+   If the server wants a key, the key goes in the session environment's secret settings, and
+   `apollo.toml` names only the variable. It never goes in chat, a file or a commit.
 2. **How the first accepted model is chosen** (step 8). Without it Gate 2 cannot pass.
 3. **Two spec questions** from the retrieval suite, recorded in
    [`../PROJECT_STATE.md`](../PROJECT_STATE.md) under step 11:
@@ -410,5 +411,12 @@ None of these blocked the work so far. The first two block the gates.
    - When a conversation no longer fits the context, a model-call row is recorded for a call
      that was never made, so that replay can show what did not fit. ADR-0013 says a row is one
      actual call. The alternative leaves the failure table's "manifest is recorded" unmet.
-6. **Whether Apollo stays a command-line program,** or gets an HTTP API.
+6. **Whether Apollo stays a command-line program.**
+   - The spec draws a small web service (§A.1, §M.1: FastAPI, reachable from this machine only,
+     one access token) with the command line as its client.
+   - What is built is the command line calling Apollo's core directly. Nothing listens on a
+     port. §D.9/5 records that, and the implementation plan has no step that builds the service.
+   - Claude recommends leaving it so for the trial. One person on one machine gains nothing from
+     a service, and with nothing listening there is nothing to bind or to authenticate (§K.1,
+     §K.2). It is needed once a second client, such as a phone or a web page, must reach Apollo.
 7. **The go-ahead for the Apollo VM** on your own hardware.
