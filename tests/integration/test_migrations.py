@@ -188,17 +188,83 @@ def test_a_new_migration_is_applied_and_recorded_with_its_digest(
     assert owner_db.migrate() == []
 
 
+@pytest.fixture()
+def pre_checksum_deployment(admin_dsn: str, tmp_path, monkeypatch):
+    """A database as a deployment from before checksums left it.
+
+    Only the migrations that existed then are applied, and they are recorded
+    by name alone. Later migrations are not there at all: they could not have
+    been, so a test that blanked every digest would be describing a
+    deployment that never existed.
+    """
+    import shutil
+    import uuid
+
+    import psycopg
+
+    from apollo.storage import db as db_module
+    from apollo.storage.db import PRE_CHECKSUM_SHA256
+    from tests.conftest import _with_dbname
+
+    name = f"apollo_test_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(admin_dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(f'CREATE DATABASE "{name}"')
+    owner = Database(_with_dbname(admin_dsn, name))
+    then = tmp_path / "migrations-then"
+    then.mkdir()
+    for migration in PRE_CHECKSUM_SHA256:
+        shutil.copy(db_module.MIGRATIONS_DIR / migration, then / migration)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(db_module, "MIGRATIONS_DIR", then)
+            assert owner.migrate() == list(PRE_CHECKSUM_SHA256)
+        with owner.connect() as conn, conn.cursor() as cur:
+            cur.execute("ALTER TABLE schema_migration DROP COLUMN sha256")
+        yield owner
+    finally:
+        with psycopg.connect(admin_dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s",
+                (name,),
+            )
+            cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
+
+
 def test_a_deployment_from_before_checksums_is_adopted_when_its_files_match(
+    pre_checksum_deployment: Database,
+) -> None:
+    """Rows recorded by name only get their digest, after it matches the known version.
+
+    The same run then applies every migration written since, each with its
+    digest, so the upgraded deployment ends where a new one starts.
+    """
+    from apollo.storage.db import MIGRATIONS_DIR, PRE_CHECKSUM_SHA256, migration_sha256
+
+    every = {p.name: migration_sha256(p.read_text(encoding="utf-8"))
+             for p in sorted(MIGRATIONS_DIR.glob("*.sql"))}
+    since = [name for name in every if name not in PRE_CHECKSUM_SHA256]
+    assert "0005_memory_proposals.sql" in since
+
+    assert pre_checksum_deployment.migrate() == since
+    recorded = _recorded(pre_checksum_deployment)
+    assert recorded == every
+    assert {name: recorded[name] for name in PRE_CHECKSUM_SHA256} == PRE_CHECKSUM_SHA256
+    assert pre_checksum_deployment.migrate() == []
+
+
+def test_only_a_migration_from_before_checksums_may_be_recorded_without_one(
     owner_db: Database,
 ) -> None:
-    """Rows recorded by name only get their digest, after it matches the known version."""
-    from apollo.storage.db import PRE_CHECKSUM_SHA256
+    """A later migration with no digest is not adopted on trust: the run is refused."""
+    from apollo.errors import MigrationChecksumError
 
     with owner_db.connect() as conn, conn.cursor() as cur:
-        cur.execute("ALTER TABLE schema_migration DROP COLUMN sha256")
-    assert owner_db.migrate() == []
-    assert _recorded(owner_db) == PRE_CHECKSUM_SHA256
-    assert owner_db.migrate() == []
+        cur.execute("UPDATE schema_migration SET sha256 = NULL"
+                    " WHERE name = '0005_memory_proposals.sql'")
+    with pytest.raises(MigrationChecksumError,
+                       match="0005_memory_proposals.*without a checksum"):
+        owner_db.migrate()
+    assert _recorded(owner_db)["0005_memory_proposals.sql"] is None
 
 
 def test_a_deployment_from_before_checksums_is_refused_when_a_file_changed(
@@ -209,8 +275,13 @@ def test_a_deployment_from_before_checksums_is_refused_when_a_file_changed(
     copy = _copy_migrations(tmp_path, monkeypatch)
     edited = copy / "0003_memory_lifecycle.sql"
     edited.write_text(edited.read_text() + "\n-- edited\n")
+    from apollo.storage.db import PRE_CHECKSUM_SHA256
+
     with owner_db.connect() as conn, conn.cursor() as cur:
-        cur.execute("UPDATE schema_migration SET sha256 = NULL")
+        cur.execute("UPDATE schema_migration SET sha256 = NULL WHERE name = ANY(%s)",
+                    (list(PRE_CHECKSUM_SHA256),))
     with pytest.raises(MigrationChecksumError, match="0003_memory_lifecycle.*before checksums"):
         owner_db.migrate()
-    assert set(_recorded(owner_db).values()) == {None}
+    # Refused whole: no row was adopted, not even those whose files still match.
+    recorded = _recorded(owner_db)
+    assert {recorded[name] for name in PRE_CHECKSUM_SHA256} == {None}

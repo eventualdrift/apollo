@@ -42,7 +42,7 @@ from apollo.errors import (
 from apollo.sanitise import error_detail, error_kind, whitelist_meta
 from apollo.storage.db import Database, assert_no_open_transaction
 from apollo.storage.repositories import InvocationRepository
-from apollo.storage.unit_of_work import unit_of_work
+from apollo.storage.unit_of_work import UnitOfWork, unit_of_work
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +52,8 @@ class InvocationOutcome:
     invocation_id: uuid.UUID
     generation: Generation | None
     error: BaseException | None
+    #: What `interpret` made of the generation, when the caller passed one.
+    value: Any = None
 
     @property
     def ok(self) -> bool:
@@ -127,6 +129,15 @@ def open_invocation(
     return invocation_id
 
 
+#: Reads a generation into whatever the caller needs from it. Raising marks the
+#: invocation failed: the provider answered, but not with what was asked for.
+Interpret = Callable[[Generation], Any]
+#: Runs inside the invocation's completion transaction, with what `interpret`
+#: returned, so a row that exists only because the call succeeded commits with
+#: it or not at all (spec A.2, the Tp transaction).
+OnComplete = Callable[[UnitOfWork, uuid.UUID, Any, datetime], None]
+
+
 def invoke(
     db: Database,
     *,
@@ -137,6 +148,8 @@ def invoke(
     bundle: ContextBundle,
     params: GenerationParams,
     now_factory: Callable[[], datetime],
+    interpret: Interpret | None = None,
+    on_complete: OnComplete | None = None,
 ) -> InvocationOutcome:
     """Render, call the adapter, and record the outcome. Nothing else calls a Brain."""
     with unit_of_work(db, expect_audit=False) as uow:
@@ -151,6 +164,7 @@ def invoke(
     started = time.monotonic()
     generation: Generation | None = None
     meta: dict[str, Any] = {}
+    value: Any = None
     error: BaseException | None = None
     try:
         request = brain.render(bundle)
@@ -160,6 +174,10 @@ def invoke(
         # adapter-result path. A malformed raw_meta must become a recorded
         # invocation failure, not escape later and leave the row started.
         meta = whitelist_meta(generation.raw_meta)
+        if interpret is not None:
+            # Content-level: a reply that is not what was asked for fails the
+            # invocation, and is never retried (spec L).
+            value = interpret(generation)
     except BaseException as exc:  # noqa: BLE001 - mapped by type, never by text
         error = exc
 
@@ -167,74 +185,31 @@ def invoke(
     now = now_factory()
 
     try:
-        with unit_of_work(db) as uow:
-            repo = InvocationRepository(uow)
-            if generation is not None and error is None:
-                repo.complete(
-                    invocation_id=invocation_id,
-                    now=now,
-                    latency_ms=latency_ms,
-                    model_identifier=generation.model_identifier,
-                    rendered_prompt_hash=generation.rendered_prompt_hash,
-                    finish_reason=generation.finish_reason,
-                    prompt_tokens=generation.prompt_tokens,
-                    completion_tokens=generation.completion_tokens,
-                    reasoning_tokens=generation.reasoning_tokens,
-                )
-                uow.record(
-                    AuditEvent(
-                        event_type=EventType.INVOCATION_COMPLETED,
-                        actor=Actor.MODEL,
-                        subject_kind="model_invocation",
-                        subject_id=invocation_id,
-                        conversation_id=conversation_id,
-                        turn_id=turn_id,
-                        occurred_at=now,
-                        payload={
-                            "latency_ms": latency_ms,
-                            "finish_reason": generation.finish_reason,
-                            "prompt_tokens": generation.prompt_tokens,
-                            "completion_tokens": generation.completion_tokens,
-                            "reasoning_tokens": generation.reasoning_tokens,
-                            **{k: v for k, v in meta.items() if k == "provider_request_id"},
-                        },
+        if generation is not None and error is None:
+            try:
+                with unit_of_work(db) as uow:
+                    _record_completed(
+                        uow, invocation_id=invocation_id, turn_id=turn_id,
+                        conversation_id=conversation_id, generation=generation, meta=meta,
+                        latency_ms=latency_ms, now=now,
                     )
+                    if on_complete is not None:
+                        on_complete(uow, invocation_id, value, now)
+            except FinalisationConflictError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - mapped by type, never by text
+                if on_complete is None:
+                    raise
+                # The completion transaction is atomic and rolled back whole:
+                # the invocation did not complete, so it is recorded as failed
+                # rather than left `started` beside work that never committed.
+                error = exc
+        if error is not None:
+            with unit_of_work(db) as uow:
+                _record_failed(
+                    uow, invocation_id=invocation_id, turn_id=turn_id,
+                    conversation_id=conversation_id, error=error, latency_ms=latency_ms, now=now,
                 )
-            else:
-                assert error is not None
-                kind = error_kind(error)
-                repo.fail(
-                    invocation_id=invocation_id,
-                    now=now,
-                    latency_ms=latency_ms,
-                    error_kind=str(kind),
-                    error_detail=error_detail(error),
-                )
-                uow.record(
-                    AuditEvent(
-                        event_type=EventType.INVOCATION_FAILED,
-                        actor=Actor.APOLLO_CORE,
-                        subject_kind="model_invocation",
-                        subject_id=invocation_id,
-                        conversation_id=conversation_id,
-                        turn_id=turn_id,
-                        occurred_at=now,
-                        payload={"latency_ms": latency_ms, "error_kind": str(kind)},
-                    )
-                )
-                if kind is ErrorKind.BRAIN_UNAVAILABLE:
-                    uow.record(
-                        AuditEvent(
-                            event_type=EventType.BRAIN_UNAVAILABLE,
-                            actor=Actor.SYSTEM,
-                            subject_kind="model_invocation",
-                            subject_id=invocation_id,
-                            conversation_id=conversation_id,
-                            turn_id=turn_id,
-                            occurred_at=now,
-                            payload={"error_kind": str(kind)},
-                        )
-                    )
     except FinalisationConflictError as conflict:
         # Orphan recovery marked this invocation interrupted while the call was
         # running. The transaction above rolled back whole: the row keeps what
@@ -255,7 +230,97 @@ def invoke(
             "error_kind": str(error_kind(error)) if error else None,
         },
     )
-    return InvocationOutcome(invocation_id=invocation_id, generation=generation, error=error)
+    return InvocationOutcome(
+        invocation_id=invocation_id, generation=generation, error=error, value=value
+    )
+
+
+def _record_completed(
+    uow: UnitOfWork,
+    *,
+    invocation_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    generation: Generation,
+    meta: dict[str, Any],
+    latency_ms: int,
+    now: datetime,
+) -> None:
+    InvocationRepository(uow).complete(
+        invocation_id=invocation_id,
+        now=now,
+        latency_ms=latency_ms,
+        model_identifier=generation.model_identifier,
+        rendered_prompt_hash=generation.rendered_prompt_hash,
+        finish_reason=generation.finish_reason,
+        prompt_tokens=generation.prompt_tokens,
+        completion_tokens=generation.completion_tokens,
+        reasoning_tokens=generation.reasoning_tokens,
+    )
+    uow.record(
+        AuditEvent(
+            event_type=EventType.INVOCATION_COMPLETED,
+            actor=Actor.MODEL,
+            subject_kind="model_invocation",
+            subject_id=invocation_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            occurred_at=now,
+            payload={
+                "latency_ms": latency_ms,
+                "finish_reason": generation.finish_reason,
+                "prompt_tokens": generation.prompt_tokens,
+                "completion_tokens": generation.completion_tokens,
+                "reasoning_tokens": generation.reasoning_tokens,
+                **{k: v for k, v in meta.items() if k == "provider_request_id"},
+            },
+        )
+    )
+
+
+def _record_failed(
+    uow: UnitOfWork,
+    *,
+    invocation_id: uuid.UUID,
+    turn_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    error: BaseException,
+    latency_ms: int,
+    now: datetime,
+) -> None:
+    kind = error_kind(error)
+    InvocationRepository(uow).fail(
+        invocation_id=invocation_id,
+        now=now,
+        latency_ms=latency_ms,
+        error_kind=str(kind),
+        error_detail=error_detail(error),
+    )
+    uow.record(
+        AuditEvent(
+            event_type=EventType.INVOCATION_FAILED,
+            actor=Actor.APOLLO_CORE,
+            subject_kind="model_invocation",
+            subject_id=invocation_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            occurred_at=now,
+            payload={"latency_ms": latency_ms, "error_kind": str(kind)},
+        )
+    )
+    if kind is ErrorKind.BRAIN_UNAVAILABLE:
+        uow.record(
+            AuditEvent(
+                event_type=EventType.BRAIN_UNAVAILABLE,
+                actor=Actor.SYSTEM,
+                subject_kind="model_invocation",
+                subject_id=invocation_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                occurred_at=now,
+                payload={"error_kind": str(kind)},
+            )
+        )
 
 
 def _validate_generation(value: object, request: RenderedRequest) -> Generation:

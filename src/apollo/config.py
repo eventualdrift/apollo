@@ -74,6 +74,8 @@ class Config:
     orphan_window_seconds: int = 900
     #: Hard cap on the policy region. Identity is never trimmed; it raises.
     identity_token_cap: int = 4000
+    #: A pending memory proposal older than this expires and is never revived.
+    proposal_expiry_days: int = 7
 
     def provider_for_alias(self, alias: str) -> ProviderConfig:
         short = alias.removeprefix("brain.")
@@ -127,7 +129,14 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         identity_dir=Path(core.get("identity_dir", "identity")),
         orphan_window_seconds=int(core.get("orphan_window_seconds", 900)),
         identity_token_cap=int(core.get("identity_token_cap", 4000)),
+        proposal_expiry_days=_positive_days(core.get("proposal_expiry_days", 7)),
     )
+
+
+def _positive_days(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigError("core.proposal_expiry_days must be a whole number of days, at least 1")
+    return value
 
 
 _PROVIDER_KEYS = {"kind", "allowed_modes", "eval_only", "context_budget", "reserved_output"}

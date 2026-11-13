@@ -7,10 +7,11 @@ commit or neither does (spec C.10, ADR-0004).
 
 Direct entry is always `origin_tier = user_asserted`,
 `source_kind = user_direct_entry`, `origin = personal`, and it is the only route
-to `scope = self`. Proposal-based creation arrives with step 12; fixture
-memories for the retrieval eval arrive with step 11. Neither is reachable here.
+to `scope = self`. Creating a memory from a proposal is `apollo.core.proposals`;
+the retrieval eval loads its fixture memories itself. Neither is reachable here.
 
-Nothing here retrieves or renders a memory into context: that is step 11.
+Nothing here retrieves or renders a memory into context: that is
+`apollo.core.retrieval` and the compiler.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from apollo.memory.models import (
     parse_kind,
     parse_scope,
 )
+from apollo.memory.proposals import DECLINED_BY_TOMBSTONE, ProposalStatus
 from apollo.storage.db import Database
 from apollo.storage.repositories import MemoryRepository
 from apollo.storage.unit_of_work import UnitOfWork, unit_of_work
@@ -174,9 +176,30 @@ def tombstone_memory(db: Database, memory_id: uuid.UUID, *, now: datetime) -> li
     `memory_id` may name any row of the chain. One `memory.tombstoned` event is
     recorded per row, naming what was removed by id only. Returns the ids of
     the rows tombstoned, the head first.
+
+    A pending proposal structured from a message the chain cites is declined
+    in the same transaction, with its own event: it was a copy of the claim.
     """
     with unit_of_work(db) as uow:
         result = lifecycle.tombstone(uow, memory_id, now=now)
+        for proposal in result.proposals_declined:
+            uow.record(
+                AuditEvent(
+                    event_type=EventType.MEMORY_PROPOSAL_RESOLVED,
+                    actor=Actor.USER,  # the forget is the user's act
+                    subject_kind="memory_proposal",
+                    subject_id=proposal.id,
+                    conversation_id=proposal.conversation_id,
+                    turn_id=proposal.turn_id,
+                    occurred_at=now,
+                    payload={
+                        "status": str(ProposalStatus.IGNORED),
+                        "scope": str(proposal.scope),
+                        "kind": str(proposal.kind),
+                        "reason": DECLINED_BY_TOMBSTONE,
+                    },
+                )
+            )
         for row in result.rows:
             uow.record(
                 AuditEvent(

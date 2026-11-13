@@ -8,14 +8,16 @@ import os
 import sys
 import uuid
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TextIO
 
 from apollo.brains.registry import BrainRegistry
 from apollo.cli import memory as memory_cli
+from apollo.cli import proposal as proposal_cli
 from apollo.config import load_config
 from apollo.core.conversations import create_conversation, get_conversation, transcript
 from apollo.core.identity import IdentityLoader
+from apollo.core.proposals import expire_proposals
 from apollo.core.turns import TurnService
 from apollo.errors import ApolloError, ConfigError
 from apollo.logging_setup import configure_logging
@@ -27,6 +29,10 @@ from apollo.storage.db import (
     describe_role_privileges,
     provision_runtime_role,
 )
+
+#: In `apollo chat`, a line starting with this asks for a memory proposal from
+#: the rest of the line: the explicit client action of spec D.2.
+REMEMBER_COMMAND = "/remember"
 
 DEFAULT_CASES_DIR = "evals/persona/cases"
 DEFAULT_RUNS_DIR = "evals/runs"
@@ -159,6 +165,9 @@ def main(argv: list[str] | None = None) -> int:
     p_say.add_argument("conversation")
     p_say.add_argument("text")
     p_say.add_argument("--idempotency-key", default=None)
+    p_say.add_argument("--remember", action="store_true",
+                       help="ask Apollo to propose a memory from this message, "
+                            "whatever its wording")
 
     p_chat = sub.add_parser("chat", help="interactive loop")
     p_chat.add_argument("conversation")
@@ -167,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("conversation")
 
     memory_cli.add_parser(sub)
+    proposal_cli.add_parser(sub)
 
     args = parser.parse_args(argv)
     if (
@@ -262,6 +272,14 @@ def main(argv: list[str] | None = None) -> int:
             memory_cli.Terminal(sys.stdin, sys.stdout, sys.stderr, lambda: datetime.now(UTC)),
         )
 
+    if args.command == "proposal":
+        return proposal_cli.run(
+            args,
+            Database(config.database_dsn),
+            memory_cli.Terminal(sys.stdin, sys.stdout, sys.stderr, lambda: datetime.now(UTC)),
+            expiry=timedelta(days=config.proposal_expiry_days),
+        )
+
     db, service = _service(config)
 
     if args.command == "new":
@@ -281,25 +299,45 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     service.recover_orphans()
+    expiry = timedelta(days=config.proposal_expiry_days)
+    expire_proposals(db, now=datetime.now(UTC), expiry=expiry)
+    term = memory_cli.Terminal(sys.stdin, sys.stdout, sys.stderr, lambda: datetime.now(UTC))
 
     if args.command == "say":
-        return _emit(service.submit(
+        result = service.submit(
             conversation_id=conversation_id,
             text=args.text,
             idempotency_key=args.idempotency_key,
-        ))
+            propose_memory=args.remember,
+        )
+        code = _emit(result)
+        if result.proposal is not None:
+            proposal_cli.offer(result.proposal, term)
+        return code
 
     if args.command == "chat":
-        print("apollo — ctrl-d to leave")
+        print("apollo — ctrl-d to leave; start a line with /remember to propose a memory")
         while True:
             try:
                 text = input("janu> ").strip()
             except EOFError:
                 print()
                 return 0
+            remember = text.split(maxsplit=1)[:1] == [REMEMBER_COMMAND]
+            text = text.removeprefix(REMEMBER_COMMAND).strip() if remember else text
             if not text:
                 continue
-            _emit(service.submit(conversation_id=conversation_id, text=text))
+            result = service.submit(
+                conversation_id=conversation_id, text=text, propose_memory=remember
+            )
+            _emit(result)
+            if result.proposal is not None:
+                # Asked now, while it is in front of him. Declining to answer
+                # leaves it pending: a proposal does not die with the terminal.
+                if sys.stdin.isatty():
+                    proposal_cli.ask(result.proposal, db, term, expiry=expiry)
+                else:
+                    proposal_cli.offer(result.proposal, term)
     return 0
 
 
@@ -632,6 +670,9 @@ def _runtime_log_settings(config) -> tuple[LogSettings | None, str]:  # type: ig
 def _emit(result) -> int:  # type: ignore[no-untyped-def]
     if result.status == "completed":
         print(f"apollo> {result.response}")
+        if result.capture_failed:
+            print("(Apollo could not make a memory proposal from that; nothing was saved. "
+                  "Add it yourself with `apollo memory add`.)", file=sys.stderr)
         return 0
     print(f"apollo> [turn failed: {result.error_kind}]", file=sys.stderr)
     return 1

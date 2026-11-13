@@ -41,6 +41,7 @@ from apollo.memory.models import (
     included_manifest_entry,
     validate_claim,
 )
+from apollo.memory.proposals import Proposal, decline_for_forgotten
 from apollo.storage.repositories import InvocationRepository, MemoryRepository
 from apollo.storage.unit_of_work import UnitOfWork
 
@@ -336,6 +337,8 @@ class Tombstone:
 
     requested_id: uuid.UUID
     rows: tuple[TombstonedRow, ...]  # the head first, then each predecessor
+    #: Pending proposals from a message the chain cites, declined with it.
+    proposals_declined: tuple[Proposal, ...] = ()
 
     @property
     def head_id(self) -> uuid.UUID:
@@ -406,6 +409,8 @@ def tombstone(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Tombst
     its predecessor): clear subject and content (the generated search vector
     empties with them), clear every observation excerpt, and redact the
     verification hashes of every invocation whose manifest included the row.
+    Then decline any pending proposal structured from a message the chain
+    cites: it is Apollo's own copy of the same claim (spec D.7/3).
     The caller records `memory.tombstoned` in the same transaction; the
     database refuses to commit an incomplete tombstone (migrations 0003, 0004).
     """
@@ -425,4 +430,5 @@ def tombstone(uow: UnitOfWork, memory_id: uuid.UUID, *, now: datetime) -> Tombst
                 ),
             )
         )
-    return Tombstone(requested_id=memory_id, rows=tuple(rows))
+    declined = decline_for_forgotten(uow, [row["id"] for row in chain], now=now)
+    return Tombstone(requested_id=memory_id, rows=tuple(rows), proposals_declined=tuple(declined))

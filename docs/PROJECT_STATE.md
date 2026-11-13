@@ -10,6 +10,101 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): memory proposals — step 12 is built; its model run is not
+
+The entries below are unchanged. PR #25 (memory in the reply) is merged. With this, milestone 3
+is built except for what needs a model.
+
+**What happens now when a message asks to be remembered (§A.2 step 10, §D.2, §D.3):**
+- **Intent is detected by code.** `apollo.memory.intent` holds the spec's phrase list (eleven
+  patterns, case-insensitive, whole words). The explicit client action is `apollo say --remember`
+  and `/remember` in `apollo chat`. Benchmark conversations are never proposed from.
+- **One more invocation, `purpose=memory_proposal`,** runs after the reply and before the turn
+  completes. Its bundle is `PROPOSAL_RULES` and the `SOURCE_MESSAGE` as fenced data: no identity,
+  no memory. It has its own retry (one, transport only), separate from the reply's.
+- **The pending row commits with the invocation's completion** (Tp is one transaction). If the
+  row cannot be written, the invocation is recorded `failed` instead of `completed`.
+- **Failure never fails the turn (§L).** A reply that is not four labelled lines, a cut-off
+  reply, a scope of `self`, two transport failures, a refused row: each leaves a `failed`
+  invocation, no proposal, and a `system_note` after the reply pointing at `apollo memory add`.
+  Structure failures are `malformed_generation` and are not retried.
+- **Save, Edit and Save, Ignore** are `apollo.core.proposals`, reached from `apollo proposal`.
+  A save creates a `user_asserted` memory with `source_kind = model_proposal_approved` and an
+  `asserts` observation that names the source message and quotes it. Every resolution clears the
+  proposal's subject and content in the same transaction.
+- **Expiry:** `proposal_expiry_days` in `apollo.toml`, default 7. Swept when Apollo starts a
+  conversation command and before every `apollo proposal` command. A save past the window
+  expires the proposal instead.
+
+**The database holds the rules as well (migration `0005`):**
+- `kind` is a closed enum (finding 15); one proposal per turn, per invocation and per memory.
+- A proposal is inserted pending, not `self`, by the *completed* `memory_proposal` invocation of
+  its own turn, from that turn's request message.
+- References, scope, kind and creation time are write-once. It is resolved once and never
+  revived. Only a saved proposal names a memory, and that memory must be active, `user_asserted`,
+  personal, not `self`, and asserted by the source message as an approved proposal.
+- The reverse holds too: an `asserts` observation with `model_proposal_approved` needs a saved
+  proposal behind it (checked at commit).
+
+**Forgetting a claim declines the offer to remember it (§D.7/3; found by the O.1/18 sweep).**
+The sentinel sweep, unchanged, failed once proposals existed: its scenario leaves a proposal
+pending from the message a memory cites, and the tombstone left the claim there in the model's
+wording. §D.7 says a tombstone "clears any Apollo-owned derived or cached copy of the claim",
+so the tombstone now does, in its own transaction:
+- a pending proposal whose source message any row of the chain cites is resolved `ignored`,
+  its text cleared, with a `memory.proposal_resolved` event carrying
+  `reason: memory_tombstoned`;
+- the database refuses a tombstone that leaves one pending, and refuses a new proposal from a
+  message a tombstoned memory cites (migration `0005`), so the two cannot pass each other;
+- **the boundary:** a pending proposal from any other message is left alone. Nothing links it to
+  the memory, and Apollo does not guess. The README says so.
+- **Reading made here (Claude):** `ignored` is used because §C.9 allows no new status and
+  describes it as "a claim Janu declined to keep". It adds to the ignored count in
+  `apollo proposal stats`; the audit reason tells the two apart. Janu may prefer `expired`.
+
+**The model can propose and cannot approve (§D.3/2).** A new architecture test follows imports
+transitively from the turn, the invocation path, retrieval, the compiler and every adapter:
+none reaches `memory.approval`, `memory.lifecycle`, `core.proposals` or `core.memories`.
+
+**Decisions made here (Claude; ordinary implementation choices, none changes the spec):**
+- **One proposal per turn, ever**, not only one *pending* (§D.3/6 says pending). A turn runs
+  step 10 once, so the stricter rule costs nothing and is simpler to hold in the database.
+- **A structuring reply may carry stray lines** (a preamble, markdown emphasis, quotes) and is
+  still read, as long as each of the four labels appears exactly once with a value. A missing or
+  repeated label, or a scope or kind outside the closed lists, is refused, never guessed.
+- **Limits on a proposed claim:** subject 80 characters, content 600. Longer is refused as "not
+  one claim". The observation excerpt is the source message, cut at 1000 characters.
+- **Audit:** `memory.proposed` (actor `model`), `memory.created` (actor `user`, with
+  `source_kind`), `memory.proposal_resolved` (actor `user`, or `system` for expiry). Payloads
+  carry ids, scope, kind and status only. `memory_id` was added to the allowed payload keys.
+- **`brain.fake` in echo mode answers a structuring request** with the message's own words under
+  `scope: user`, `kind: fact`, so the whole flow runs offline. It shows nothing about a model.
+- **A pre-checksum deployment is now tested as it really was:** only migrations 0001-0004
+  applied and recorded by name. The upgrade adopts those four and applies 0005. A later
+  migration recorded without a checksum is refused, with a message that says so.
+
+**Proven on `brain.fake` (mechanical):** O.1/12 (two invocation rows, each with its own bundle
+and render version), O.1/14 (save, edit and save, ignore, expire; no path from generation to a
+memory), O.1/15 (text cleared on every resolution; the check constraint refuses a terminal row
+with text; a sweep of every text-bearing column finds the model's wording nowhere afterwards),
+O.1/16 (`self` refused from the model, from an edit and by the database; direct entry works).
+
+**Not yet proven, and why:**
+- **Whether a real model answers the structuring request in the four labelled lines.** No model
+  endpoint is reachable from the cloud session. The proposal rules text is new in `compiler-v2`
+  and has never been sent to a model. If a model does not follow it, proposals fail safely
+  (reply intact, note written), and the rules text or parser needs another look.
+- Everything listed under "Not yet proven" in the entry below still stands.
+
+**Remaining work, in order:** step 13 replay (O.1/9, 10, 17), step 14 failure behaviour and
+redaction (every row of §L; O.1/25, 27), step 15 backup and restore (O.1/30), step 16 the
+acceptance record against O.1/1-30, step 17 the product trial (Janu's). A small CLI fix is
+queued with them: `apollo provision` should not need `APOLLO_DATABASE_DSN`.
+
+**Waiting on Janu (none blocks the steps above):** a real-model endpoint for the §J.5 persona
+run on `compiler-v2`, Gate 1 and Gate 2; the first-baseline policy for Gate 2; review of the 25
+retrieval cases; the two open spec questions recorded under step 11.
+
 ## Update (2026-11-13): memory reaches the reply — step 11 is built; its model run is not
 
 The entries below are unchanged. With this, every part of step 11 that does not need a model is
