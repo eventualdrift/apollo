@@ -33,10 +33,12 @@ _PHRASES: tuple[tuple[str, str], ...] = (
 )
 
 #: A phrase is matched as whole words, with any run of whitespace between them,
-#: so "remember   that" matches and "misremember that" does not.
+#: so "remember   that" matches and "misremember that" does not. A phrase that
+#: ends in punctuation is complete at that mark: "remember:buy milk" matches.
 def _compiled(phrase: str) -> re.Pattern[str]:
     spaced = phrase.replace(" ", r"\s+")
-    return re.compile(rf"(?<!\w){spaced}(?!\w)", re.IGNORECASE)
+    ends_in_a_word = re.search(r"\w$", phrase) is not None
+    return re.compile(rf"(?<!\w){spaced}" + (r"(?!\w)" if ends_in_a_word else ""), re.IGNORECASE)
 
 
 _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(

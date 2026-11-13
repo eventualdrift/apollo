@@ -30,6 +30,8 @@ def test_the_list_is_exactly_the_specs() -> None:
     "I can't remember where I put the keys.",
     "Remembering this is harder than it looks.",
     "I misremember that every time.",
+    "misremember: that is the word for it.",
+    "Remembered: nothing at all.",
     "That was a footnote that nobody read.",
     "He noted the build was red.",
     "I never forget a face.",
@@ -46,6 +48,8 @@ def test_ordinary_conversation_is_never_a_candidate(message: str) -> None:
     ("please   remember \n that the door is green", "remember_that"),
     ("Remember: buy oat milk", "remember_colon"),
     ("remember : buy oat milk", "remember_colon"),
+    ("remember:buy oat milk", "remember_colon"),  # nothing need follow the colon
+    ("REMEMBER:42 is the bus", "remember_colon"),
     ("Dont forget the meeting", "dont_forget"),
     ("Don’t forget the meeting", "dont_forget"),
     ("From now on, answer in metric.", "from_now_on"),
