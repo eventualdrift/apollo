@@ -48,8 +48,15 @@ about a model's behaviour.
 
 ## Milestone 4 (in progress)
 
-Honest under failure, auditable end to end. So far: **replay**. Apollo stores no prompt, and can
-still rebuild what any model call was sent and prove it (see "What a turn was sent" below).
+Honest under failure, auditable end to end. So far:
+
+- **Replay.** Apollo stores no prompt, and can still rebuild what any model call was sent and
+  prove it (see "What a turn was sent" below).
+- **Failure behaviour.** Every row of the specification's failure table is implemented and
+  tested (see "When something fails" below), and no log line or stored error field carries
+  message, memory or provider text.
+
+Still to come: an executed and verified backup and restore.
 
 ## Two database roles
 
@@ -281,6 +288,31 @@ it again, and compares both hashes. It reports two statuses per call:
 `replay` exits 1 when a call has a `MISMATCH` or a `SOURCE_MISSING`, and 0 otherwise. It only
 reads: it writes no row and no audit event. `--context` prints conversation and memory text to
 your terminal; nothing else does, and none of it is logged.
+
+## When something fails
+
+A failure is always the same shape of thing: a recorded fact, an honest note in the transcript,
+no made-up reply, and no quiet substitute. `apollo show` displays the notes; the model never sees
+them.
+
+| What fails | What Apollo does |
+|---|---|
+| The model server is unreachable, or times out | One retry against the same model, recorded as a second call. If that fails too, the turn fails with a note. No reply is invented and no other model is tried. |
+| The model is not permitted for this conversation | Refused before anything is searched or sent. |
+| The database is unavailable | The command fails. Nothing is answered from memory: a turn that was not recorded did not happen. |
+| The memory search fails | The turn continues, and the model is told the search failed. It is never told "nothing was found". |
+| The model returns nothing | The turn fails. No empty reply is stored. |
+| The model stops at its output limit | The reply is kept and shown as cut off, in `say`, `chat` and `show`. |
+| The reply is not what was asked for | Never retried. Only an unreachable server is retried, once. |
+| The conversation no longer fits the context | The turn fails before any call. What was assembled is recorded, so `apollo turn replay` shows what did not fit. Identity is never trimmed to make room. |
+| A proposal cannot be made | The reply stands, and a note says nothing was saved. |
+| Apollo is killed mid-turn | Your message and the turn are already recorded. The next start marks the turn interrupted, with a note. |
+| You press Ctrl-C during a reply | The turn is recorded as interrupted, at once. |
+| The same request arrives twice | The first answer is returned. Nothing is generated again. |
+
+A command that cannot run prints the kind of failure and nothing else, because an error's text can
+quote a row or a connection string. A configuration problem is the exception: it names the
+missing variable or key.
 
 ## Checks
 

@@ -10,6 +10,68 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): failure behaviour and redaction — step 14 is built
+
+The entries below are unchanged. PR #26 (proposals) is merged; replay is in its own PR.
+
+**Every row of §L now has its behaviour and a test** (`tests/integration/test_failure_table.py`,
+one section per row, in the table's order). Three rows needed code:
+
+- **Context overflow keeps its manifest.** §L says "Manifest still persisted so it is visible
+  what did not fit". It was not: a turn whose context did not fit failed with no invocation row
+  at all. The compiler now raises `UnsendableContextError` carrying the bundle it had assembled
+  (what it would have sent, and what the budget dropped, with reasons), and the turn records it
+  as an invocation that is `failed` with `error_kind = context_overflow`. No model is called.
+  The invocation replays, so `apollo turn replay --context` shows what would have been sent.
+  - **Reading made here (Claude):** ADR-0013 calls an invocation "one actual call to a model".
+    This row stands for a call that was prepared and could not be made. The schema has no other
+    place for a manifest, §L asks for one, and the invariant ADR-0013 states precisely is the
+    other direction (every actual attempt has exactly one row), which still holds. Its
+    `error_kind` marks it. If Janu would rather not have such rows, the alternative is to leave
+    §L's manifest clause unmet.
+  - A budget with no room at all (`reserved_output` at or above the model's context) still
+    fails with nothing recorded: nothing was assembled.
+- **A truncated reply is surfaced.** It was stored with `truncated = true` and shown as if
+  whole. `TurnResult.truncated` now carries it, `apollo say` and `chat` say the reply was cut
+  off, `apollo show` marks the line, and a repeated request reports it again.
+- **Ctrl-C during a model call is recorded as an interruption.** It was recorded as an internal
+  error, with the internal-error note. `KeyboardInterrupt` now maps to `interrupted`.
+
+**The terminal (also closes the queued CLI fix):**
+- A command that fails prints `apollo: <ErrorType>` and exits 1: no traceback, no exception
+  text. A database error adds that the database could not be used. The exception is logged by
+  type and frames, through the redacting handler only.
+- A configuration error prints its own message (key and variable names) and exits 2.
+- `apollo migrate` and `apollo provision` no longer need `APOLLO_DATABASE_DSN`. The README's
+  first commands used to fail with a traceback. The log-settings check that needs the runtime
+  connection says it was skipped.
+
+**Redaction, re-proven over everything built since M1:**
+- `tests/integration/test_log_redaction.py` runs one session through retrieval, proposals
+  (made, edited, ignored, badly worded, refused by the database), a provider failure, an empty
+  generation, a failed search, a context overflow, replay and two tombstones, with a different
+  sentinel in the identity, a message, a memory's subject and content, the model's reply, the
+  model's wording of a proposal, a provider's error body and a database error's text. No
+  sentinel is in any log line (captured at DEBUG), any `error_detail`, any audit payload or any
+  manifest (O.1/25, O.1/22).
+
+**The model backend killed mid-session (O.1/27), without a real model:**
+- `tests/integration/test_model_backend_killed.py` uses real sockets and the real adapter
+  against a small HTTP server that speaks the OpenAI-compatible API. The server is shut down
+  between turns and started again on the same port. The failed turn has two failed invocation
+  rows (`connection_failed`), a failed turn and a note; nothing is said in Apollo's name; a
+  second, reachable provider is never asked; the next turn succeeds, and is sent the unanswered
+  message and not the note.
+- **Not yet proven:** the same against an actual model server (`llama-server`, vLLM). That
+  needs an endpoint this session cannot reach, and is in the runbook for step 16.
+
+**Smaller things:**
+- A test that runs the CLI left the root logger writing to a closed stream; a fixture now
+  removes those handlers after each test. This was noise in the output, not a failure.
+
+**Remaining work, in order:** step 15 backup and restore (O.1/30), step 16 the acceptance
+record against O.1/1-30, step 17 the product trial (Janu's).
+
 ## Update (2026-11-13): replay — step 13 is built
 
 The entries below are unchanged. Step 13 opens milestone 4.

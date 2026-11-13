@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import logging
 import os
 import sys
 import uuid
@@ -21,7 +22,7 @@ from apollo.core.identity import IdentityLoader
 from apollo.core.proposals import expire_proposals
 from apollo.core.turns import TurnService
 from apollo.errors import ApolloError, ConfigError
-from apollo.logging_setup import configure_logging
+from apollo.logging_setup import configure_logging, redaction_installed
 from apollo.storage.db import (
     Database,
     LogSettings,
@@ -34,6 +35,12 @@ from apollo.storage.db import (
 #: In `apollo chat`, a line starting with this asks for a memory proposal from
 #: the rest of the line: the explicit client action of spec D.2.
 REMEMBER_COMMAND = "/remember"
+
+#: A reply the model did not finish is shown, and shown as unfinished (spec L).
+TRUNCATED_MARK = "[cut off: the model reached its output limit]"
+TRUNCATED_NOTICE = (
+    "(That reply was cut off: the model reached its output limit. It is recorded as truncated.)"
+)
 
 DEFAULT_CASES_DIR = "evals/persona/cases"
 DEFAULT_RUNS_DIR = "evals/runs"
@@ -77,7 +84,36 @@ def _read_runtime_password(
     return stdin.readline().rstrip("\r\n")
 
 
+#: The commands that run as the database owner and need no runtime connection.
+OWNER_COMMANDS = frozenset({"migrate", "provision"})
+
+
 def main(argv: list[str] | None = None) -> int:
+    """Run one command. A failure prints as its kind, never as a traceback.
+
+    An exception's text can quote a refused row, a DSN or a provider's reply,
+    so only its type reaches the terminal. Configuration errors are the
+    exception: they are Apollo's own words about keys and variable names.
+    """
+    try:
+        return _dispatch(argv)
+    except ConfigError as exc:
+        print(f"apollo: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - the kind only
+        kind = type(exc).__name__
+        if redaction_installed():
+            logging.getLogger(__name__).error("cli.failed", exc_info=True)
+        hint = ""
+        if type(exc).__module__.split(".")[0] == "psycopg":
+            # Spec L: no degraded mode. What was not recorded did not happen.
+            hint = (" — the database could not be used. Nothing Apollo could not record "
+                    "was done; see `apollo show` for what the conversation holds.")
+        print(f"apollo: {kind}{hint}", file=sys.stderr)
+        return 1
+
+
+def _dispatch(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="apollo")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -188,10 +224,12 @@ def main(argv: list[str] | None = None) -> int:
     ):
         # Offline by construction: no configuration, database or provider is loaded.
         return _run_notice_ablation_offline(args)
-    config = load_config()
+    # The owner commands connect with APOLLO_ADMIN_DSN and need no runtime DSN.
+    owner_only = args.command in OWNER_COMMANDS
+    config = load_config(require_database_dsn=False) if owner_only else load_config()
     configure_logging(config.log_level)
 
-    if args.command in {"migrate", "provision"}:
+    if args.command in OWNER_COMMANDS:
         if not config.admin_dsn:
             print(
                 "APOLLO_ADMIN_DSN is not set. Migrations and provisioning run as the"
@@ -304,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         for row in transcript(db, conversation_id):
             marker = {"user": "janu", "apollo": "apollo", "system_note": "----"}[row["role"]]
-            print(f"[{row['seq']:>3}] {marker}: {row['content']}")
+            cut_off = f"  {TRUNCATED_MARK}" if row["truncated"] else ""
+            print(f"[{row['seq']:>3}] {marker}: {row['content']}{cut_off}")
         return 0
 
     service.recover_orphans()
@@ -664,6 +703,8 @@ def _run_gate1(config, alias: str, *, eval_surface: bool) -> int:  # type: ignor
 
 def _runtime_log_settings(config) -> tuple[LogSettings | None, str]:  # type: ignore[no-untyped-def]
     """The log settings the runtime role's own sessions get, or why they couldn't be read."""
+    if not config.database_dsn:
+        return None, "APOLLO_DATABASE_DSN is not set"
     try:
         with Database(config.database_dsn).connect() as conn:
             settings = describe_log_settings(conn, role=config.runtime_role)
@@ -679,6 +720,8 @@ def _runtime_log_settings(config) -> tuple[LogSettings | None, str]:  # type: ig
 def _emit(result) -> int:  # type: ignore[no-untyped-def]
     if result.status == "completed":
         print(f"apollo> {result.response}")
+        if result.truncated:
+            print(TRUNCATED_NOTICE, file=sys.stderr)
         if result.capture_failed:
             print("(Apollo could not make a memory proposal from that; nothing was saved. "
                   "Add it yourself with `apollo memory add`.)", file=sys.stderr)

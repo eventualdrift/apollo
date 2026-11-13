@@ -38,7 +38,12 @@ from apollo.brains.registry import BrainRegistry
 from apollo.config import MODE_PERSONAL, Config
 from apollo.context.budget import Budget
 from apollo.context.bundle import ContextBundle, Purpose
-from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
+from apollo.context.compiler import (
+    CompileRequest,
+    HistoryMessage,
+    UnsendableContextError,
+    compile_context,
+)
 from apollo.core import invocations
 from apollo.core.identity import IdentityLoader, snapshot_identity
 from apollo.core.policy import SURFACE_INTERACTIVE, check_brain_permitted
@@ -202,6 +207,9 @@ class TurnResult:
     proposal: Proposal | None = None
     #: The message asked for a memory and the proposal could not be made.
     capture_failed: bool = False
+    #: The model stopped at its output limit: the reply is recorded and shown,
+    #: marked as cut off, never presented as whole (spec L).
+    truncated: bool = False
 
 
 class TurnService:
@@ -413,9 +421,20 @@ class TurnService:
                 )
             )
         except ApolloError as exc:
-            # What was searched is recorded even though nothing was sent.
-            record_for_turn(self._db, turn_id=turn_id, found=found, bundle=None, now=now)
-            return self._fail_turn(conversation_id, turn_id, exc, turn_started)
+            # A context that was assembled and does not fit is kept: its
+            # manifest shows what did not fit (spec L). Anything else that
+            # stops compilation leaves nothing to record but the search.
+            assembled = exc.bundle if isinstance(exc, UnsendableContextError) else None
+            record_for_turn(self._db, turn_id=turn_id, found=found, bundle=assembled, now=now)
+            unsent: tuple[uuid.UUID, ...] = ()
+            if assembled is not None:
+                unsent = self._record_unsent(
+                    conversation_id=conversation_id, turn_id=turn_id, brain=brain,
+                    provider_key=provider.key, bundle=assembled, error=exc, now=now,
+                )
+            return self._fail_turn(
+                conversation_id, turn_id, exc, turn_started, invocation_ids=unsent
+            )
         record_for_turn(self._db, turn_id=turn_id, found=found, bundle=bundle, now=now)
 
         outcome, attempts, refused = self._generate_with_retry(
@@ -551,6 +570,39 @@ class TurnService:
                                                    "retry_of": str(invocation_id)})
         assert outcome is not None
         return outcome, tuple(attempts), None
+
+    def _record_unsent(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        brain: Brain,
+        provider_key: str,
+        bundle: ContextBundle,
+        error: BaseException,
+        now: datetime,
+    ) -> tuple[uuid.UUID, ...]:
+        """Record the reply that could not be sent, with its manifest. No model is called."""
+        try:
+            return (
+                invocations.record_unsent(
+                    self._db,
+                    turn_id=turn_id,
+                    conversation_id=conversation_id,
+                    purpose="reply",
+                    brain=brain,
+                    brain_alias=self._brain_alias,
+                    provider_key=provider_key,
+                    bundle=bundle,
+                    params=GenerationParams(),
+                    error=error,
+                    now=now,
+                ),
+            )
+        except InvocationRefusedError:
+            # A memory in it was forgotten since the search. The database will
+            # not record a manifest that includes it, and the turn fails anyway.
+            return ()
 
     def _propose(
         self,
@@ -732,6 +784,7 @@ class TurnService:
             invocation_ids=invocation_ids,
             proposal=proposal,
             capture_failed=capture_failed,
+            truncated=truncated,
         )
 
     def _fail_turn(
@@ -869,13 +922,15 @@ class TurnService:
             turn = TurnRepository(uow).find_by_request_message(prior["id"])
             if turn is None:
                 return None
-            response = None
+            response, truncated = None, False
             if turn["response_message_id"]:
                 cur = uow.execute(
-                    "SELECT content FROM message WHERE id = %s", (turn["response_message_id"],)
+                    "SELECT content, truncated FROM message WHERE id = %s",
+                    (turn["response_message_id"],),
                 )
                 row = cur.fetchone()
-                response = row["content"] if row else None
+                if row:
+                    response, truncated = row["content"], bool(row["truncated"])
             recorded = InvocationRepository(uow).for_turn(turn["id"])
             invocation_ids = tuple(row["id"] for row in recorded)
             # Still offered if it is still pending: a proposal must not die
@@ -904,6 +959,7 @@ class TurnService:
             error_kind=turn["error_kind"],
             replayed=True,
             capture_failed=capture_failed,
+            truncated=truncated,
             proposal=(
                 proposal if proposal is not None
                 and proposal.status is proposals.ProposalStatus.PENDING else None

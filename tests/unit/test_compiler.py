@@ -182,6 +182,44 @@ def test_the_floor_needs_the_last_two_exchanges_not_just_four_messages() -> None
         compile_context(make(history=history, budget=budget(total=4800, identity_cap=4000)))
 
 
+def test_a_context_that_does_not_fit_is_handed_back_with_what_was_assembled() -> None:
+    """Spec L: the manifest is still there to persist, so what did not fit is visible."""
+    from apollo.context.compiler import UnsendableContextError
+
+    history = [
+        HistoryMessage("m0", "user", "old question"),
+        HistoryMessage("m1", "apollo", "old answer"),
+        HistoryMessage("m2", "user", "x" * 6000),  # one of the newest four, and too big
+        HistoryMessage("m3", "apollo", "a2"),
+        HistoryMessage("m4", "user", "q3"),
+        HistoryMessage("m5", "apollo", "a3"),
+    ]
+    with pytest.raises(UnsendableContextError, match="newest 4 history messages") as floor:
+        compile_context(make(history=history, budget=budget(total=4800, identity_cap=4000)))
+    assembled = floor.value.bundle
+    # Everything it would have sent, and what the budget dropped, oldest first.
+    assert [b.source_ref for b in assembled.blocks_in(Region.HISTORY)] == ["m3", "m4", "m5"]
+    assert [(e["source_ref"], e["drop_reason"]) for e in assembled.manifest
+            if not e["included"]] == [(ref, "budget:conversation") for ref in ("m0", "m1", "m2")]
+    assert assembled.blocks[0].block_type is BlockType.IDENTITY  # never dropped
+    assert assembled.blocks[-1].block_type is BlockType.USER_MESSAGE
+    assert assembled.bundle_hash and assembled.total_token_estimate <= 4800
+    assert "x" * 50 not in repr(assembled.manifest)
+
+    # The other way to overflow: what must be sent is already too much.
+    with pytest.raises(UnsendableContextError, match="exceed the context budget") as request:
+        compile_context(make("y" * 9000, history=history[:2],
+                             budget=budget(total=4800, identity_cap=4000)))
+    assembled = request.value.bundle
+    assert not assembled.blocks_in(Region.HISTORY)
+    assert [e["drop_reason"] for e in assembled.manifest if not e["included"]] == [
+        "budget:conversation"] * 2
+    assert assembled.total_token_estimate > 4800  # the overflow, in the record's own numbers
+    # It is still a ContextOverflowError to everything that already catches one.
+    assert isinstance(request.value, ContextOverflowError)
+    assert request.value.kind.value == "context_overflow"
+
+
 def test_the_floor_check_compares_messages_not_counts() -> None:
     from apollo.context.budget import assert_conversation_floor
 

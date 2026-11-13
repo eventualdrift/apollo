@@ -75,4 +75,8 @@ def error_kind(exc: BaseException) -> ErrorKind:
     """Map an exception *type* to an Apollo error kind."""
     if isinstance(exc, ApolloError):
         return exc.kind
+    if isinstance(exc, KeyboardInterrupt):
+        # Stopped by the person at the keyboard, mid-call. That is an
+        # interruption, and is recorded as one rather than as a fault.
+        return ErrorKind.INTERRUPTED
     return ErrorKind.INTERNAL

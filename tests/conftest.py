@@ -135,3 +135,20 @@ def _with_role(dsn: str, role: str) -> str:
     parts = [p for p in dsn.split() if not p.startswith("user=")]
     parts.append(f"user={role}")
     return " ".join(parts)
+
+
+@pytest.fixture(autouse=True)
+def _reset_root_logging():
+    """A test that runs the CLI leaves the root logger writing to a captured stream.
+
+    That stream is closed when the test ends. Without this, every later log
+    line in the session reports a write to a closed file.
+    """
+    import logging
+
+    yield
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if handler.__class__.__module__.startswith("_pytest"):
+            continue  # pytest's own capture handlers
+        root.removeHandler(handler)

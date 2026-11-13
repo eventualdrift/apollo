@@ -84,48 +84,105 @@ def open_invocation(
 ) -> uuid.UUID:
     """Commit a `started` invocation row. Must happen before the adapter is entered."""
     with unit_of_work(db) as uow:
-        invocation_id = InvocationRepository(uow).start(
+        invocation_id = _start(
+            uow, turn_id=turn_id, conversation_id=conversation_id, purpose=purpose,
+            brain=brain, brain_alias=brain_alias, provider_key=provider_key, bundle=bundle,
+            params=params, now=now, retry_of=retry_of,
+        )
+    return invocation_id
+
+
+def record_unsent(
+    db: Database,
+    *,
+    turn_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    purpose: str,
+    brain: Brain,
+    brain_alias: str,
+    provider_key: str,
+    bundle: ContextBundle,
+    params: GenerationParams,
+    error: BaseException,
+    now: datetime,
+) -> uuid.UUID:
+    """Record a call that was prepared and could not be made (spec L, context overflow).
+
+    The adapter is never entered: nothing here renders or generates. The row
+    is written started and failed in one transaction, carrying the manifest
+    of what was assembled, so "what did not fit" survives the failure. It is
+    the one kind of invocation row that stands for no provider attempt, and
+    its `error_kind` says so; every actual attempt still has exactly one row.
+    """
+    with unit_of_work(db) as uow:
+        invocation_id = _start(
+            uow, turn_id=turn_id, conversation_id=conversation_id, purpose=purpose,
+            brain=brain, brain_alias=brain_alias, provider_key=provider_key, bundle=bundle,
+            params=params, now=now, retry_of=None,
+        )
+        _record_failed(
+            uow, invocation_id=invocation_id, turn_id=turn_id,
+            conversation_id=conversation_id, error=error, latency_ms=0, now=now,
+        )
+    return invocation_id
+
+
+def _start(
+    uow: UnitOfWork,
+    *,
+    turn_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    purpose: str,
+    brain: Brain,
+    brain_alias: str,
+    provider_key: str,
+    bundle: ContextBundle,
+    params: GenerationParams,
+    now: datetime,
+    retry_of: uuid.UUID | None,
+) -> uuid.UUID:
+    invocation_id = InvocationRepository(uow).start(
+        turn_id=turn_id,
+        purpose=purpose,
+        brain_alias=brain_alias,
+        provider_key=provider_key,
+        adapter_key=brain.adapter_key,
+        render_version=brain.render_version,
+        compiler_version=bundle.compiler_version,
+        token_estimator=bundle.estimator_name,
+        context_manifest=bundle.manifest_list(),
+        context_bundle_hash=bundle.bundle_hash,
+        context_token_estimate=bundle.total_token_estimate,
+        max_trust_tier=str(bundle.max_trust_tier),
+        taint=bundle.taint,
+        generation_params=params.as_dict(),
+        now=now,
+        retry_of_invocation_id=retry_of,
+    )
+    uow.record(
+        AuditEvent(
+            event_type=EventType.INVOCATION_STARTED,
+            actor=Actor.APOLLO_CORE,
+            subject_kind="model_invocation",
+            subject_id=invocation_id,
+            conversation_id=conversation_id,
             turn_id=turn_id,
-            purpose=purpose,
-            brain_alias=brain_alias,
-            provider_key=provider_key,
-            adapter_key=brain.adapter_key,
-            render_version=brain.render_version,
-            compiler_version=bundle.compiler_version,
-            token_estimator=bundle.estimator_name,
-            context_manifest=bundle.manifest_list(),
-            context_bundle_hash=bundle.bundle_hash,
-            context_token_estimate=bundle.total_token_estimate,
-            max_trust_tier=str(bundle.max_trust_tier),
-            taint=bundle.taint,
-            generation_params=params.as_dict(),
-            now=now,
-            retry_of_invocation_id=retry_of,
+            occurred_at=now,
+            payload={
+                "purpose": purpose,
+                "brain_alias": brain_alias,
+                "provider_key": provider_key,
+                "adapter_key": brain.adapter_key,
+                "render_version": brain.render_version,
+                "compiler_version": bundle.compiler_version,
+                "token_estimator": bundle.estimator_name,
+                "token_estimate": bundle.total_token_estimate,
+                "max_trust_tier": str(bundle.max_trust_tier),
+                "taint": bundle.taint,
+                "retry_of_invocation_id": str(retry_of) if retry_of else None,
+            },
         )
-        uow.record(
-            AuditEvent(
-                event_type=EventType.INVOCATION_STARTED,
-                actor=Actor.APOLLO_CORE,
-                subject_kind="model_invocation",
-                subject_id=invocation_id,
-                conversation_id=conversation_id,
-                turn_id=turn_id,
-                occurred_at=now,
-                payload={
-                    "purpose": purpose,
-                    "brain_alias": brain_alias,
-                    "provider_key": provider_key,
-                    "adapter_key": brain.adapter_key,
-                    "render_version": brain.render_version,
-                    "compiler_version": bundle.compiler_version,
-                    "token_estimator": bundle.estimator_name,
-                    "token_estimate": bundle.total_token_estimate,
-                    "max_trust_tier": str(bundle.max_trust_tier),
-                    "taint": bundle.taint,
-                    "retry_of_invocation_id": str(retry_of) if retry_of else None,
-                },
-            )
-        )
+    )
     return invocation_id
 
 
