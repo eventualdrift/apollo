@@ -32,17 +32,20 @@ class RetrievalSettings:
     """Spec E.3, with the two values the spec leaves open stated here.
 
     `lexical_floor` and `text_search_config` are chosen by the retrieval eval
-    (step 11, Janu 2026-11-12): the highest `correct_empty_rate`, then the
-    highest `recall@5`, judged on held-out cases. Until that run, the floor is
-    provisional.
+    (spec E.4; Janu, 2026-11-12), not by argument: `apollo.evals.retrieval.
+    select_settings` picks them on the tuning cases and the held-out cases
+    judge the choice. `evals/retrieval/selection.json` records the sweep, and
+    CI fails if these defaults stop being what it selects.
     """
 
     k: int = 12
     recency_n: int = 3
     lexical_weight: float = 1.0
     recency_weight: float = 0.3
-    #: Provisional until the step 11 eval sets it. Scores are `ts_rank_cd`
-    #: scaled to [0, 1) by r / (r + 1); this admits any single-term match.
+    #: Scores are `ts_rank_cd` scaled to [0, 1) by r / (r + 1). One shared word
+    #: scores about 0.09, so 0.0 means any match that survives the
+    #: configuration's stop words counts; what keeps weak matches out under
+    #: `english` is its stop-word list, which the sweep shows is enough.
     lexical_floor: float = 0.0
     text_search_config: str = "english"
     #: Candidates read from Postgres before the floor; well above K.

@@ -60,12 +60,11 @@ def fresh_database(admin_dsn: str):
             cur.execute(f'DROP ROLE IF EXISTS "{role}"')
 
 
-@pytest.fixture()
-def database_factory(admin_dsn: str):
-    """Make more provisioned databases in one test, for suites that need one per fixture.
+def _database_factory(admin_dsn: str):
+    """Make provisioned databases on demand; drop them all when the scope ends.
 
-    Each is created, migrated and provisioned exactly as `fresh_database` is,
-    and all are dropped at teardown. Returns the runtime-role `Database`.
+    Each is created, migrated and provisioned exactly as `fresh_database` is.
+    Yields a callable returning the runtime-role `Database`.
     """
     import psycopg
 
@@ -96,6 +95,18 @@ def database_factory(admin_dsn: str):
                 )
                 cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
                 cur.execute(f'DROP ROLE IF EXISTS "{role}"')
+
+
+@pytest.fixture()
+def database_factory(admin_dsn: str):
+    """More provisioned databases in one test, for suites that need one per fixture."""
+    yield from _database_factory(admin_dsn)
+
+
+@pytest.fixture(scope="module")
+def module_database_factory(admin_dsn: str):
+    """As `database_factory`, kept for a whole module: for a run several tests read."""
+    yield from _database_factory(admin_dsn)
 
 
 @pytest.fixture()

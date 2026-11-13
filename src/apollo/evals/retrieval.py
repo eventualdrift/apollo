@@ -527,3 +527,53 @@ def metrics(results: list[CaseResult]) -> Metrics:
 
 def _mean(values: list[Any]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+# -- choosing the floor and the configuration (spec E.4) ---------------------------------
+
+#: The grid the selection sweeps. `ts_rank_cd` scaled by r / (r + 1) gives the
+#: weakest possible match (one shared word) about 0.09, so the floors below
+#: that are all "any match counts"; the ones from 0.1 demand more than one word.
+SWEEP_FLOORS = (0.0, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2)
+SWEEP_CONFIGS = ("english", "simple")
+#: A candidate stays eligible while its tuning recall is at least this share of
+#: the best candidate's.
+RECALL_SHARE = 0.9
+
+
+def sweep_grid() -> tuple[RetrievalSettings, ...]:
+    return tuple(
+        RetrievalSettings(lexical_floor=floor, text_search_config=config)
+        for config in SWEEP_CONFIGS for floor in SWEEP_FLOORS
+    )
+
+
+def select_settings(tune: dict[RetrievalSettings, Metrics]) -> RetrievalSettings:
+    """The floor and text-search configuration the tuning cases choose.
+
+    Janu's rule (2026-11-12) is the highest `correct_empty_rate` first, then
+    the highest `recall@5`. Taken alone that picks a floor high enough to
+    reject every match: a perfect empty rate and no recall. So only candidates
+    whose recall is at least `RECALL_SHARE` of the best candidate's compete:
+
+    1. the highest `correct_empty_rate`;
+    2. then the highest `recall@5`;
+    3. then the lowest floor (the least a memory has to do to be found);
+    4. then `english`, the spec's baseline (E.4), over `simple`.
+
+    The choice is made on the tuning cases only; the held-out cases judge it.
+    """
+    if not tune:
+        raise ValueError("nothing to select from")
+    best_recall = max(m.recall_at_5 for m in tune.values())
+    eligible = [s for s, m in tune.items() if m.recall_at_5 >= RECALL_SHARE * best_recall]
+    return min(
+        eligible,
+        key=lambda s: (
+            -tune[s].correct_empty_rate,
+            -tune[s].recall_at_5,
+            s.lexical_floor,
+            SWEEP_CONFIGS.index(s.text_search_config)
+            if s.text_search_config in SWEEP_CONFIGS else len(SWEEP_CONFIGS),
+        ),
+    )

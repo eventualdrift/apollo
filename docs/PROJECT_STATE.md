@@ -10,6 +10,38 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): the floor and the text-search configuration are chosen (§E.4)
+
+Janu asked for the remaining work to be finished without a stop at each step (2026-11-13). The
+step 11 entry below is unchanged.
+
+**The choice: `english`, floor 0.0.** `select_settings` (`apollo.evals.retrieval`) makes it on the
+tuning cases by the rule recorded below, and the held-out cases judge it.
+
+| candidate | half | passed | recall@5 | precision@5 | correct_empty_rate |
+|---|---|---|---|---|---|
+| `english`, floors 0.0 to 0.075 (selected: 0.0) | tuning | 12/13 | 1.0 | 1.0 | 1.0 |
+| | held-out | 11/12 | 1.0 | 1.0 | 1.0 |
+| `english`, floor 0.1 | tuning | 7/13 | 0.60 | 1.0 | 1.0 |
+| | held-out | 6/12 | 0.50 | 1.0 | 1.0 |
+| `simple`, floors 0.0 to 0.075 | tuning | 7/13 | 0.875 | 0.56 | 0.0 |
+| | held-out | 4/12 | 0.875 | 0.41 | 0.0 |
+
+- **Why the floor is 0.0.** One shared word scores about 0.09 (`ts_rank_cd` scaled by r / (r + 1)),
+  so every floor below that behaves the same, and the rule takes the lowest. At 0.1 a memory needs
+  more than one shared word, and recall falls to 0.60 and 0.50. What keeps weak matches out under
+  `english` is its stop-word list: with it, no case expecting nothing found anything.
+- **Why not `simple`.** It keeps stop words and does not stem, so "my" and "what" match unrelated
+  memories. It never reports an honest absence below floor 0.1, and above it recall is under half.
+- **The record.** `evals/retrieval/selection.json` holds the whole sweep (both configurations at
+  seven floors, both halves). CI reruns it on every commit and fails if the rerun differs, or if
+  `RetrievalSettings`' defaults stop being what the tuning cases select.
+- **Regenerating.** After a deliberate change to the cases or to retrieval, run
+  `APOLLO_REGENERATE_RETRIEVAL_RECORDS=1 pytest tests/integration/test_retrieval_eval.py` and commit
+  both records with the reason.
+- **Still Janu's.** His review of the 25 cases has not happened; the choice above was made on the
+  cases as drafted. If the review changes a case, the regeneration above reruns the selection.
+
 ## Update (2026-11-12): step 11 (retrieval and its eval) begins — Janu's decisions
 
 **Janu's decisions for step 11 (2026-11-12):**
