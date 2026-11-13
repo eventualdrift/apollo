@@ -157,7 +157,12 @@ def _check_recorded(
             )
         if stored is None:
             # Applied before digests were recorded: only the known version counts.
-            if PRE_CHECKSUM_SHA256.get(name) != current:
+            if name not in PRE_CHECKSUM_SHA256:
+                raise MigrationChecksumError(
+                    f"migration {name} is recorded without a checksum, and it is not"
+                    " one of the migrations that predate checksums"
+                )
+            if PRE_CHECKSUM_SHA256[name] != current:
                 raise MigrationChecksumError(
                     f"migration {name} was applied before checksums were recorded,"
                     " and its file no longer matches the version that was applied"

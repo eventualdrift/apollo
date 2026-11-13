@@ -37,7 +37,9 @@ Apollo remembers what he was asked to remember. A memory is created only on Janu
 Retrieval is measured by its own suite (`evals/retrieval/`), with no model, on every commit. Its
 recorded sweep chose the `english` text-search configuration and the match threshold.
 
-Still to come in this milestone: Apollo proposing a memory when asked to remember something.
+When a message asks Apollo to remember something, he offers a **proposal**: the claim as he
+would store it, for Janu to save, edit or ignore (see "Asking Apollo to remember" below). A
+proposal is not a memory, and nothing Apollo generates can turn one into a memory.
 
 ## Two database roles
 
@@ -139,6 +141,47 @@ out of shell history and the process list. A pipe is only as private as its sour
 stays on disk, and an `echo` or `printf` in your shell puts the text in its history. Errors
 print as their kind only: a database error's message can quote the row it refused.
 
+### Asking Apollo to remember
+
+```sh
+apollo say <conversation> "Remember that I take my coffee black."
+apollo say <conversation> "I take my coffee black." --remember    # whatever the wording
+apollo proposal list            # what is waiting; --status saved | ignored | expired | all
+apollo proposal save <id>       # save it as a memory, as proposed
+apollo proposal edit <id>       # change it, then save; --scope and --kind change those
+apollo proposal ignore <id>     # decline it; nothing is saved
+apollo proposal stats           # how many were saved, edited, ignored or left to expire
+```
+
+Apollo offers a proposal only when the message says so in one of a fixed list of phrases
+("remember that", "keep in mind", "from now on", "note that", "don't forget", "for future
+reference" and a few more), or when you ask with `--remember` (in `apollo chat`, start the line
+with `/remember`). The list is code, not a model's judgement, and ordinary conversation is never
+scanned for things to remember.
+
+- **The reply comes first, and stands whatever happens to the proposal.** One more recorded model
+  call then structures the claim from that one message, with no identity and no memory in its
+  context. If that call fails or its answer is not a usable claim, the reply is unaffected and a
+  note in the transcript says nothing was saved.
+- **A proposal is not a memory.** It is never searched, never shown to the model and never stated
+  by Apollo as something he knows. Only `save` or `edit` makes a memory, and the database refuses
+  a memory that claims an approval no saved proposal backs.
+- **A saved proposal is your assertion**, recorded as one a model structured, and it points at the
+  message it came from. It cannot be about Apollo himself; that is `apollo memory add --scope self`
+  only.
+- **Its text does not outlive the decision.** Saving, editing, ignoring and expiry each clear the
+  proposal's subject and content in the same transaction. What stays is its status, scope, kind,
+  timestamps and references. After an edit, nothing of the model's wording is kept.
+- **Left alone, it expires** after `proposal_expiry_days` (`apollo.toml`, default 7) and cannot be
+  revived. Until then it holds the claim as the model worded it.
+
+In `apollo chat` at a terminal the proposal is asked about at once; pressing enter leaves it
+pending. An edit's subject and content are read from stdin like a memory's, never from an
+argument. At most one proposal is made per message.
+
+On `brain.fake` the proposal is the message's own words under a fixed scope and kind. How well a
+real model structures a claim is not something these tests show.
+
 ### Deleting a memory
 
 `apollo memory forget <id>` tombstones the memory and every version of it (naming any version
@@ -149,6 +192,9 @@ forgets the whole correction chain), in one transaction:
 - every observation excerpt quoting it is removed;
 - the verification hashes of every recorded model call whose context included any version are
   redacted, since a hash of known text would confirm a guess at it;
+- a proposal still waiting that Apollo made from a message the memory cites is declined, and its
+  text cleared: it was his own wording of the same claim. (A proposal you saved had already
+  given up its text when you saved it.)
 - one `memory.tombstoned` audit event per version records that it happened, with ids and counts
   only.
 
@@ -164,6 +210,10 @@ is **logical deletion, not physical erasure**. What it does not reach:
   with the turn, and can contain the claim.
 - **PostgreSQL below the rows.** Old row versions until vacuum reclaims them, the write-ahead log,
   replicas, and any dump or backup taken before the tombstone. Nothing overwrites them.
+- **A proposal still waiting from some other message.** A pending proposal holds its own copy of
+  a claim, in the model's wording. If the memory was not made from that proposal's message,
+  Apollo has no way to know the two are the same claim, and leaves the proposal alone.
+  `apollo proposal ignore <id>` clears it, and unanswered it expires on its own.
 - **Outside Apollo.** The server log (see "PostgreSQL's own log" above), your terminal and shell
   history, and any file you piped the text from.
 

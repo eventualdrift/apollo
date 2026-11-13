@@ -15,6 +15,11 @@ The shape of an ordinary successful turn:
 
 A transport failure adds one retry, which is a *new invocation row* with
 `retry_of_invocation_id` set — never a second call inside the failed row.
+
+When the message asks for something to be remembered, one more invocation
+structures a *proposal* between the reply and the turn's completion (spec
+D.3). That is all it can do: nothing on this path creates a memory, and a
+proposal that fails never fails the turn.
 """
 
 from __future__ import annotations
@@ -28,9 +33,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from apollo.audit.events import Actor, AuditEvent, EventType
-from apollo.brains.base import Brain, GenerationParams
+from apollo.brains.base import Brain, Generation, GenerationParams
 from apollo.brains.registry import BrainRegistry
-from apollo.config import Config
+from apollo.config import MODE_PERSONAL, Config
 from apollo.context.budget import Budget
 from apollo.context.bundle import ContextBundle, Purpose
 from apollo.context.compiler import CompileRequest, HistoryMessage, compile_context
@@ -48,6 +53,9 @@ from apollo.errors import (
     PolicyRefusedError,
     TransportReason,
 )
+from apollo.memory import proposals
+from apollo.memory.intent import detect_persistence_intent
+from apollo.memory.proposals import Proposal, ProposalStructureError, ProposedClaim
 from apollo.sanitise import error_detail, error_kind
 from apollo.storage.db import Database
 from apollo.storage.repositories import (
@@ -56,7 +64,7 @@ from apollo.storage.repositories import (
     MessageRepository,
     TurnRepository,
 )
-from apollo.storage.unit_of_work import unit_of_work
+from apollo.storage.unit_of_work import UnitOfWork, unit_of_work
 
 log = logging.getLogger(__name__)
 
@@ -152,6 +160,17 @@ SYSTEM_NOTE_REJECTED_AUTH = (
 )
 
 
+#: Written beside a reply whose memory proposal could not be made (spec L):
+#: the conversation succeeded, the capture did not, and direct entry still works.
+SYSTEM_NOTE_CAPTURE_FAILED = (
+    "Apollo could not turn that message into a memory proposal, so nothing was saved. "
+    "You can add it yourself with `apollo memory add`."
+)
+
+#: The structuring call is short and deterministic: four labelled lines.
+PROPOSAL_PARAMS = GenerationParams(temperature=0.0, max_tokens=256)
+
+
 def system_note_for(kind: ErrorKind) -> str:
     """The truthful note for a failure category. Total, and never derived from input."""
     return SYSTEM_NOTES.get(kind, SYSTEM_NOTE_INTERNAL)
@@ -178,6 +197,11 @@ class TurnResult:
     invocation_ids: tuple[uuid.UUID, ...]
     error_kind: str | None = None
     replayed: bool = False
+    #: The pending proposal this turn produced, for the client to offer
+    #: Save / Edit and Save / Ignore. Never a memory (spec D.3/1).
+    proposal: Proposal | None = None
+    #: The message asked for a memory and the proposal could not be made.
+    capture_failed: bool = False
 
 
 class TurnService:
@@ -263,7 +287,13 @@ class TurnService:
         text: str,
         idempotency_key: str | None = None,
         device_id: str | None = None,
+        propose_memory: bool = False,
     ) -> TurnResult:
+        """Take one message through a turn.
+
+        `propose_memory` is the explicit client action of spec D.2: it asks for
+        a proposal from this message without the message having to say so.
+        """
         now = self._clock()
         turn_started = time.monotonic()
 
@@ -363,18 +393,19 @@ class TurnService:
             conversation_mode=conversation["mode"],
         )
         try:
+            bundle_budget = Budget.for_provider(
+                context_budget=provider.context_budget,
+                max_context=capabilities.max_context,
+                reserved_output=provider.reserved_output,
+                identity_cap=self._config.identity_token_cap,
+            )
             bundle = compile_context(
                 CompileRequest(
                     purpose=Purpose.REPLY,
                     user_message=text,
                     user_message_ref=str(message["id"]),
                     now=now,
-                    budget=Budget.for_provider(
-                        context_budget=provider.context_budget,
-                        max_context=capabilities.max_context,
-                        reserved_output=provider.reserved_output,
-                        identity_cap=self._config.identity_token_cap,
-                    ),
+                    budget=bundle_budget,
                     estimator=capabilities.estimator,
                     identity=identity,
                     history=history,
@@ -415,6 +446,28 @@ class TurnService:
             )
 
         assert outcome.generation is not None
+
+        # Step 10 (spec A.2, D.2): persistence intent is detected by code, never
+        # by a model. Only then is a proposal structured, and whatever becomes
+        # of it, the reply above stands (spec D.3/8).
+        proposal: Proposal | None = None
+        capture_failed = False
+        if conversation["mode"] == MODE_PERSONAL and (
+            propose_memory or detect_persistence_intent(text) is not None
+        ):
+            proposal, proposal_attempts = self._propose(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                message_id=message["id"],
+                text=text,
+                brain=brain,
+                provider_key=provider.key,
+                budget=bundle_budget,
+                now=now,
+            )
+            attempts = (*attempts, *proposal_attempts)
+            capture_failed = proposal is None
+
         return self._complete_turn(
             conversation_id=conversation_id,
             turn_id=turn_id,
@@ -422,6 +475,8 @@ class TurnService:
             truncated=outcome.generation.finish_reason == "length",
             turn_started=turn_started,
             invocation_ids=attempts,
+            proposal=proposal,
+            capture_failed=capture_failed,
         )
 
     # -- internals ---------------------------------------------------------
@@ -434,17 +489,22 @@ class TurnService:
         brain: Brain,
         provider_key: str,
         bundle: ContextBundle,
+        purpose: str = "reply",
+        params: GenerationParams | None = None,
+        interpret: invocations.Interpret | None = None,
+        on_complete: invocations.OnComplete | None = None,
     ) -> tuple[
         invocations.InvocationOutcome | None, tuple[uuid.UUID, ...], InvocationRefusedError | None
     ]:
         """The outcome of the last attempt, and every attempt recorded.
 
-        The outcome is None only when the database refused to record an
-        attempt (the third value says why). Attempts recorded before that are
-        still returned: each has a row, and the turn's result must not say
-        otherwise.
+        One retry per purpose, for a transport failure only, as a new
+        invocation row (spec L). The outcome is None only when the database
+        refused to record an attempt (the third value says why). Attempts
+        recorded before that are still returned: each has a row, and the
+        turn's result must not say otherwise.
         """
-        params = GenerationParams()
+        params = params or GenerationParams()
         attempts: list[uuid.UUID] = []
         retry_of: uuid.UUID | None = None
         outcome = None
@@ -455,7 +515,7 @@ class TurnService:
                     self._db,
                     turn_id=turn_id,
                     conversation_id=conversation_id,
-                    purpose="reply",
+                    purpose=purpose,
                     brain=brain,
                     brain_alias=self._brain_alias,
                     provider_key=provider_key,
@@ -476,6 +536,8 @@ class TurnService:
                 bundle=bundle,
                 params=params,
                 now_factory=self._clock,
+                interpret=interpret,
+                on_complete=on_complete,
             )
             if outcome.ok:
                 break
@@ -490,6 +552,97 @@ class TurnService:
         assert outcome is not None
         return outcome, tuple(attempts), None
 
+    def _propose(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        turn_id: uuid.UUID,
+        message_id: uuid.UUID,
+        text: str,
+        brain: Brain,
+        provider_key: str,
+        budget: Budget,
+        now: datetime,
+    ) -> tuple[Proposal | None, tuple[uuid.UUID, ...]]:
+        """Structure one proposal from the message. Returns it, and the attempts made.
+
+        The bundle is the structuring rules and the source message, with no
+        identity and no memory (spec D.3), so existing memories cannot leak
+        into a proposal. The pending row commits in the same transaction as
+        the invocation's completion (spec A.2, Tp).
+
+        Nothing here can fail the turn (spec D.3/8, L). A reply that is not a
+        structured claim, a transport failure and its one retry, a refused
+        row: each is a recorded failed invocation where one was made, no
+        proposal, and a note in the transcript. And nothing here creates a
+        memory: that takes a separate call by the person, naming the proposal.
+        """
+        attempts: tuple[uuid.UUID, ...] = ()
+        # What the completion transaction wrote. Read only after that
+        # transaction has committed (`outcome.ok`), and never fetched again: a
+        # second read that failed would report a saved proposal as a failed one.
+        recorded: list[Proposal] = []
+        try:
+            bundle = compile_context(
+                CompileRequest(
+                    purpose=Purpose.MEMORY_PROPOSAL,
+                    user_message=text,
+                    user_message_ref=str(message_id),
+                    now=now,
+                    budget=budget,
+                    estimator=brain.capabilities().estimator,
+                )
+            )
+
+            def record(
+                uow: UnitOfWork, invocation_id: uuid.UUID, claim: ProposedClaim, at: datetime
+            ) -> None:
+                proposal = proposals.propose(
+                    uow,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    model_invocation_id=invocation_id,
+                    source_message_id=message_id,
+                    claim=claim,
+                    now=at,
+                )
+                recorded[:] = [proposal]
+                uow.record(
+                    AuditEvent(
+                        event_type=EventType.MEMORY_PROPOSED,
+                        actor=Actor.MODEL,
+                        subject_kind="memory_proposal",
+                        subject_id=proposal.id,
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        occurred_at=at,
+                        payload={
+                            "invocation_id": str(invocation_id),
+                            "scope": str(claim.scope),
+                            "kind": str(claim.kind),
+                            "status": str(proposals.ProposalStatus.PENDING),
+                        },
+                    )
+                )
+
+            outcome, attempts, _ = self._generate_with_retry(
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                brain=brain,
+                provider_key=provider_key,
+                bundle=bundle,
+                purpose="memory_proposal",
+                params=PROPOSAL_PARAMS,
+                interpret=_structured_claim,
+                on_complete=record,
+            )
+            if outcome is None or not outcome.ok:
+                return None, attempts
+            return recorded[0], attempts
+        except Exception:  # noqa: BLE001 - memory capture never takes the conversation down
+            log.error("proposal.failed", extra={"turn_id": str(turn_id)}, exc_info=True)
+            return None, attempts
+
     def _complete_turn(
         self,
         *,
@@ -499,6 +652,8 @@ class TurnService:
         truncated: bool,
         turn_started: float,
         invocation_ids: tuple[uuid.UUID, ...],
+        proposal: Proposal | None = None,
+        capture_failed: bool = False,
     ) -> TurnResult:
         now = self._clock()
         latency = max(1, int((time.monotonic() - turn_started) * 1000))
@@ -532,6 +687,27 @@ class TurnService:
                         payload={"message_role": "apollo", "seq": message["seq"]},
                     )
                 )
+                if capture_failed:
+                    # Durable and human-visible; never re-enters model context.
+                    note = MessageRepository(uow).append(
+                        conversation_id=conversation_id,
+                        role="system_note",
+                        content=SYSTEM_NOTE_CAPTURE_FAILED,
+                        now=now,
+                        turn_id=turn_id,
+                    )
+                    uow.record(
+                        AuditEvent(
+                            event_type=EventType.MESSAGE_CREATED,
+                            actor=Actor.SYSTEM,
+                            subject_kind="message",
+                            subject_id=note["id"],
+                            conversation_id=conversation_id,
+                            turn_id=turn_id,
+                            occurred_at=now,
+                            payload={"message_role": "system_note", "seq": note["seq"]},
+                        )
+                    )
                 uow.record(
                     AuditEvent(
                         event_type=EventType.TURN_COMPLETED,
@@ -545,13 +721,17 @@ class TurnService:
                     )
                 )
         except FinalisationConflictError:
-            return self._as_recorded(turn_id, invocation_ids)
+            # The reply was not recorded and is not delivered. A proposal was
+            # recorded before this, in its own transaction, and still stands.
+            return self._as_recorded(turn_id, invocation_ids, proposal=proposal)
         return TurnResult(
             turn_id=turn_id,
             status="completed",
             response=text,
             response_message_id=message["id"],
             invocation_ids=invocation_ids,
+            proposal=proposal,
+            capture_failed=capture_failed,
         )
 
     def _fail_turn(
@@ -621,7 +801,11 @@ class TurnService:
         )
 
     def _as_recorded(
-        self, turn_id: uuid.UUID, invocation_ids: tuple[uuid.UUID, ...]
+        self,
+        turn_id: uuid.UUID,
+        invocation_ids: tuple[uuid.UUID, ...],
+        *,
+        proposal: Proposal | None = None,
     ) -> TurnResult:
         """The turn was finalised before this attempt to: report what is recorded.
 
@@ -629,6 +813,10 @@ class TurnService:
         call is still running. The late finalisation rolled back whole, so the
         transcript gains no reply and no note, and the caller is told what the
         rows say rather than what the late result would have said.
+
+        `proposal` is a pending proposal this turn had already committed. It is
+        a row too, so it is reported: left out, it would sit pending with its
+        text and nobody would have been offered it.
         """
         with unit_of_work(self._db, expect_audit=False) as uow:
             turn = TurnRepository(uow).get(turn_id)
@@ -644,6 +832,7 @@ class TurnService:
             response_message_id=turn["response_message_id"],
             invocation_ids=invocation_ids,
             error_kind=turn["error_kind"],
+            proposal=proposal,
         )
 
     def _record_policy_refusal(
@@ -687,8 +876,24 @@ class TurnService:
                 )
                 row = cur.fetchone()
                 response = row["content"] if row else None
-            invocation_ids = tuple(
-                row["id"] for row in InvocationRepository(uow).for_turn(turn["id"])
+            recorded = InvocationRepository(uow).for_turn(turn["id"])
+            invocation_ids = tuple(row["id"] for row in recorded)
+            # Still offered if it is still pending: a proposal must not die
+            # because the client asked twice (spec C.9).
+            proposal = proposals.for_turn(uow, turn["id"])
+            # And if it could not be made, that is said again. A proposal row
+            # is never removed, so a structuring call with no row is a capture
+            # that failed; the note covers a failure before any call was made.
+            noted = uow.execute(
+                "SELECT 1 FROM message WHERE turn_id = %s AND role = 'system_note'"
+                " AND content = %s",
+                (turn["id"], SYSTEM_NOTE_CAPTURE_FAILED),
+            ).fetchone()
+            capture_failed = (
+                turn["status"] == "completed"
+                and proposal is None
+                and (noted is not None
+                     or any(row["purpose"] == "memory_proposal" for row in recorded))
             )
         return TurnResult(
             turn_id=turn["id"],
@@ -698,6 +903,11 @@ class TurnService:
             invocation_ids=invocation_ids,
             error_kind=turn["error_kind"],
             replayed=True,
+            capture_failed=capture_failed,
+            proposal=(
+                proposal if proposal is not None
+                and proposal.status is proposals.ProposalStatus.PENDING else None
+            ),
         )
 
     def _require_conversation(self, conversation_id: uuid.UUID) -> dict[str, Any]:
@@ -724,3 +934,10 @@ def _previous_user_message(history: tuple[HistoryMessage, ...]) -> str | None:
         if item.role == "user":
             return item.content
     return None
+
+
+def _structured_claim(generation: Generation) -> ProposedClaim:
+    """The claim in a structuring reply. A cut-off reply is not a claim."""
+    if generation.finish_reason == "length":
+        raise ProposalStructureError("the structuring reply was cut off")
+    return proposals.parse_structure(generation.text)

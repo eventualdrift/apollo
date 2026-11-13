@@ -86,6 +86,8 @@ ALLOWED_PAYLOAD_KEYS = frozenset(
         "source_kind",
         "latency_ms",
         "max_trust_tier",
+        # Proposals (step 12): the memory a saved proposal created. An id.
+        "memory_id",
         "message_role",
         "mode",
         "prompt_tokens",

@@ -7,6 +7,8 @@ log_level = "INFO"
 identity_dir = "identity"
 orphan_window_seconds = 900
 identity_token_cap = 4000
+# A memory proposal you neither save nor ignore expires after this many days.
+proposal_expiry_days = 7
 
 [brains]
 # Code refers to aliases, never to model names.

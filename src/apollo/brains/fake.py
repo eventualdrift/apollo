@@ -8,6 +8,12 @@ evaluation subsystem.
 
 The fake renders through the same `render_chat` path as a real adapter, so the
 region contract is exercised rather than bypassed.
+
+In `echo` mode a structuring request (one whose final message is a single
+`SOURCE_MESSAGE` fence, spec D.3) is answered in the four labelled lines the
+proposal rules ask for, built from that message alone. That lets the whole
+propose, save, edit and ignore flow run offline. It says nothing about how a
+real model structures a claim.
 """
 
 from __future__ import annotations
@@ -24,9 +30,11 @@ from apollo.brains.base import (
     GenerationParams,
     ModelCapabilities,
     RenderedRequest,
+    parse_fences,
     render_chat,
 )
-from apollo.context.bundle import ContextBundle, Region
+from apollo.context.bundle import BlockType, ContextBundle, Region
+from apollo.context.escaping import UnescapeError, unescape
 from apollo.context.estimator import CONSERVATIVE
 from apollo.errors import ApolloError
 
@@ -116,6 +124,9 @@ class FakeBrain:
     def _echo(self, req: RenderedRequest) -> str:
         """A deterministic function of the request only. No Apollo state involved."""
         last = req.messages[-1].content if req.messages else ""
+        source = _source_message(last)
+        if source is not None:
+            return _structured_claim(source)
         request_line = last.rsplit("\n\n", 1)[-1].strip()
         digest = hashlib.sha256(req.prompt_hash.encode()).hexdigest()[:8]
         return f"[fake:echo {digest}] {request_line}"
@@ -142,4 +153,25 @@ def data_and_request_text(bundle: ContextBundle) -> str:
     """Helper for tests: what the final user message should contain."""
     return "\n\n".join(
         b.content for b in (*bundle.blocks_in(Region.DATA), *bundle.blocks_in(Region.REQUEST))
+    )
+
+
+def _source_message(text: str) -> str | None:
+    """The message a structuring request hands over; None for any other request."""
+    fences, remainder = parse_fences(text)
+    if remainder.strip() or [label for label, _ in fences] != [BlockType.SOURCE_MESSAGE.value]:
+        return None
+    try:
+        return unescape(fences[0][1])
+    except UnescapeError:
+        return None
+
+
+def _structured_claim(source: str) -> str:
+    """The four labelled lines of a proposal, from the source message's own words."""
+    words = source.split()
+    return (
+        "scope: user\nkind: fact\n"
+        f"subject: {' '.join(words[:4])[:60]}\n"
+        f"content: {' '.join(words)[:500]}"
     )
