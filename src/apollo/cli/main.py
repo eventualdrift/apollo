@@ -153,6 +153,11 @@ def _dispatch(argv: list[str] | None = None) -> int:
 
     p_gate2 = eval_sub.add_parser("gate2", help="evaluate Gate 2 for a run record")
     p_gate2.add_argument("run")
+    p_gate2.add_argument(
+        "--first-baseline", action="store_true",
+        help="designate this run the first baseline: no incumbent exists to compare it with. "
+             "Needs a completed first-baseline review; cannot be combined with --incumbent",
+    )
     p_gate2.add_argument("--incumbent", help="explicit distinct incumbent run")
     p_gate2.add_argument("--incumbent-acceptance", help="prior incumbent acceptance receipt")
     p_gate2.add_argument("--review", help="persisted human review JSON")
@@ -490,16 +495,32 @@ def _run_eval(config, args) -> int:  # type: ignore[no-untyped-def]
             if not corpus_module.coverage(cases).complete:
                 print("Gate 2: repository corpus coverage is incomplete", file=sys.stderr)
                 return 1
-            gate_report = gate2_module.evaluate_gate2(
-                run,
-                identity_hash=identity.content_hash,
-                identity=identity,
-                cases=cases,
-                waivers=waivers,
-                incumbent=incumbent,
-                incumbent_acceptance=prior,
-                review=review,
-            )
+            if args.first_baseline and (incumbent is not None or prior is not None):
+                # A first baseline is the run with nothing to compare it to. Naming
+                # an incumbent beside it is a contradiction, not a stronger request.
+                print("Gate 2: --first-baseline cannot be combined with --incumbent or "
+                      "--incumbent-acceptance", file=sys.stderr)
+                return 2
+            if args.first_baseline:
+                gate_report = gate2_module.evaluate_first_baseline(
+                    run,
+                    identity_hash=identity.content_hash,
+                    identity=identity,
+                    cases=cases,
+                    waivers=waivers,
+                    review=review,
+                )
+            else:
+                gate_report = gate2_module.evaluate_gate2(
+                    run,
+                    identity_hash=identity.content_hash,
+                    identity=identity,
+                    cases=cases,
+                    waivers=waivers,
+                    incumbent=incumbent,
+                    incumbent_acceptance=prior,
+                    review=review,
+                )
             if args.review_template and gate_report.review_template is not None:
                 with pathlib.Path(args.review_template).open("x", encoding="utf-8") as out:
                     out.write(json.dumps(gate_report.review_template, indent=2) + "\n")

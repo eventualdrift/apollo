@@ -10,6 +10,43 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): Gate 2 can accept a first model — the first-baseline designation is built
+
+The entries below are unchanged. PR #31 (the two retrieval rules, `compiler-v3`) is merged. Codex
+reviewed it: one P2, reproduced and fixed (pinned memories now take the same order among
+themselves), and a clean security review.
+
+**Janu's decision 2 is built (ADR-0014).** Gate 2 accepted a model only by comparison with an
+accepted one, and every receipt named the receipt before it, so nothing could ever be accepted.
+The first model is now accepted by designation:
+- `apollo eval gate2 RUN --first-baseline --review-template FILE` writes a blank review.
+- Janu fills it in himself: a decision on every case with a manual rubric (20 cases, 60 answers)
+  and on every failing case, and a designation that acknowledges no comparison was made, with a
+  note in his own words.
+- `apollo eval gate2 RUN --first-baseline --review FILE --write-acceptance RECEIPT` checks it and
+  writes the receipt only if the gate passes.
+- The receipt (`gate2_first_baseline`) is what the next model is compared against.
+
+**What it does not loosen:**
+- A fake, offline or replayed run is never designated. It reports `infrastructure_only`.
+- A deterministic failure still needs a dated, reasoned waiver, scoped to this run. A waiver
+  written for a comparison is rejected for a baseline, and the reverse.
+- The ordinary gate still fails without an incumbent. Designation is a separate command, and it
+  refuses to be combined with `--incumbent`.
+- A replacement receipt relabelled as a baseline is rejected.
+- No code fills in a decision. Six tests were each checked by breaking the guard they cover.
+
+**Two consequences Janu should know (both in ADR-0014):**
+- **A baseline belongs to one identity, corpus and compiler version**, as every receipt did.
+  After an identity edit or a compiler change, the same model is run and designated again.
+- **Nothing stops a second designation.** Receipts are local files and Gate 2 keeps no state.
+  The safeguard is that it is a deliberate, written, dated act.
+
+**Not yet done:** any real designation. It needs a real-model run, which needs Janu's desktop.
+
+**Remaining work:** the runbook for the model runs on his desktop; then, on his machine,
+acceptance steps 1 to 8, and the product trial.
+
 ## Update (2026-11-13): Janu's decisions on the open questions; the two retrieval rules are built
 
 The entries below are unchanged. PR #30 (the acceptance record) is merged, and Codex reviewed it

@@ -145,12 +145,23 @@ server, run `apollo say`, start the server, and run `apollo say` again.
 Criterion 30 was met on a scratch deployment. Your data deserves the same once it exists:
 [`backup-restore.md`](backup-restore.md), "Testing a restore".
 
-### 8. Gate 2 waits on a decision
+### 8. Gate 2: designate the first baseline
 
-Gate 2 (spec §G.5) accepts a model only by comparison with an accepted one. There is no accepted
-one yet, and the spec does not say how the first is chosen. Until you decide that,
-`apollo eval gate2` cannot pass for any model. [`persona-eval.md`](persona-eval.md) has a minimal
-proposal under "First incumbent".
+Gate 2 (spec §G.5) accepts a model by comparison with an accepted one. The first model has
+nothing to be compared with, so you designate it (ADR-0014; your decision of 2026-11-13). Use the
+run from step 2, once every deterministic failure in it is fixed or waived:
+
+```sh
+apollo eval gate2 evals/runs/LOCAL.json --first-baseline --review-template baseline-review.json
+# Read the run. Fill in baseline-review.json yourself: a decision for every case it lists,
+# and the designation. Then:
+apollo eval gate2 evals/runs/LOCAL.json --first-baseline --review baseline-review.json \
+  --write-acceptance baseline-acceptance.json
+```
+
+It passes when it prints `GATE 2:              PASSED` and writes the receipt.
+[`persona-eval.md`](persona-eval.md), "The first baseline", says what to fill in. It is twenty
+cases to read, three answers each. No tool fills in a decision for you.
 
 ### 9. Then the product gate
 
@@ -397,7 +408,8 @@ None of these blocked the work so far. The first two block the gates.
    ran them, it needs a base URL the cloud session can reach, the model id and the context size.
    If the server wants a key, the key goes in the session environment's secret settings, and
    `apollo.toml` names only the variable. It never goes in chat, a file or a commit.
-2. **How the first accepted model is chosen** (step 8). Without it Gate 2 cannot pass.
+2. **How the first accepted model is chosen.** *Decided on 2026-11-13, and built (ADR-0014):*
+   you designate one complete real-model run you have read. Step 8 has the commands.
 3. **Two spec questions** from the retrieval suite. *Decided on 2026-11-13, and built
    (spec §E.6):*
    - when two memories match equally, the newer one ranks first;

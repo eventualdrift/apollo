@@ -1719,7 +1719,8 @@ a plain CLI client. One language, one database. No broker, cache, vector store o
 
 ## N. ADRs
 
-Thirteen, in [`../adr/README.md`](../adr/README.md).
+Fourteen, in [`../adr/README.md`](../adr/README.md). The fourteenth (first-baseline designation)
+was added on 2026-11-13.
 
 ---
 
@@ -1900,6 +1901,7 @@ rewritten, and where it reads differently, the entry named here governs.
 | Is a pinned memory always support? | Only when the search also matched it. | §E.6/2 |
 | How is a proposal recorded when a forget declines it? | `ignored`, with audit reason `memory_tombstoned`. | §C.9 statuses; the proposal's text is cleared as for any resolution |
 | What is recorded when a context is too large to send? | One `model_invocation` row, `failed`, for the call that was not made, carrying the manifest of what was assembled. | §L "Context overflow"; ADR-0013 otherwise unchanged |
+| How is the first model accepted, when §G.5 compares every model with an incumbent? | By a person's dated designation of one complete real-model run they have read, with every failure fixed or waived, acknowledging that no comparison was made. | ADR-0014 |
 | The 25 retrieval cases (§E.5) | Reviewed and accepted. | `evals/retrieval/cases/` |
 | Command line, or the HTTP service of §A.1 and §M.1? | The command line calls Core directly for the product trial. The service is built when a second client needs it. | §D.9/5; §P.3 "Device auth, remote access" |
 

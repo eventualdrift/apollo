@@ -97,6 +97,7 @@ A brain with no run is reported `NOT RUN`, never `PASS`.
 ```sh
 apollo gate1 brain.local                    # protocol compatibility, including one generation
 apollo eval gate2 evals/runs/<run>.json      # diagnostic only: no incumbent/review means nonzero
+apollo eval gate2 evals/runs/<run>.json --first-baseline ...   # the first model: see below
 ```
 
 Gate 1 runs its static protocol and rendering checks first. Only when they pass, it creates a
@@ -111,9 +112,10 @@ Gate 2 replacement acceptance requires all of the following (spec G.5, J, O.1; A
   not a fixed case total. Missing/extra/duplicate cases, samples, checks or manual observations fail.
 - Current identity version/hash, case definitions and check settings, compiler version and the common
   `conservative-v1` estimator. Every sample must have completed; no supplied overall PASS is trusted.
-- An explicitly supplied, distinct incumbent, with a prior replacement-acceptance receipt bound to
-  that incumbent artifact. Two arbitrary run files do not authorise a baseline. Reused invocation,
-  turn or conversation evidence is rejected. Known fake/offline/replay evidence cannot qualify.
+- An explicitly supplied, distinct incumbent, with a prior acceptance receipt bound to that
+  incumbent artifact: a replacement receipt, or the first-baseline receipt (below). Two arbitrary
+  run files do not authorise a baseline. Reused invocation, turn or conversation evidence is
+  rejected. Known fake/offline/replay evidence cannot qualify.
 - Equal generation parameters and per-case compiled bundle hashes. Provider, model, adapter,
   renderer and capacity may differ; rendered-prompt hashes need not match across adapters. Capacity
   differences are permissible only when the compiled inputs still match.
@@ -127,7 +129,7 @@ mechanical eligibility, and final acceptance. Exit 0 means the complete replacem
 exit 1 means non-passing evidence; exit 2 means an input/output error. A completed run alone is not
 acceptance. `diff` and `replaceability` remain inspection tools, not approval mechanisms.
 
-### Review workflow (once an authorised incumbent exists)
+### Review workflow for a replacement (once a baseline exists)
 
 Run from the configured Apollo checkout. Gate 2 itself uses no database or provider, although the
 shared CLI configuration loader still requires its usual environment settings. Keep these artifacts
@@ -178,18 +180,51 @@ reject known replay/fake or reused evidence; they cannot prove that a deliberate
 from a live provider or that its reviewer name was supplied by a human. Operators must preserve the
 original run, invocation and review evidence and control who can write acceptance records.
 
-### First incumbent: unresolved policy, no bypass
+### The first baseline (ADR-0014)
 
-The frozen specification requires an incumbent comparison but defines no first-baseline procedure.
-The replacement receipt format records an already accepted replacement and references its prior
-incumbent receipt. This patch deliberately provides **no root receipt issuer** or first-run exception.
-No incumbent means no acceptance; fake runs and Run A are not promoted. Real acceptance therefore
-remains blocked until a separately approved first-baseline policy establishes an authorised starting
-point. A minimal proposal, not approval: require a complete current real-provider run, every required
-manual review, deterministic pass or explicitly scoped waivers, and a dated operator designation
-bound to that evidence, explicitly acknowledging the absence of an incumbent comparison. Its policy
-and representation need separate approval before implementation. Do not fabricate a replacement
-receipt to stand in for that decision.
+Replacement acceptance compares a candidate with an accepted incumbent. The first model has
+nothing to be compared with, so it is accepted another way: **you read one complete real-model run
+and designate it the first baseline.** Janu decided this on 2026-11-13.
+
+```sh
+# 1. Write a NEW, blank review for the run. Exits nonzero: nothing is decided yet.
+apollo eval gate2 evals/runs/<run>.json --first-baseline --review-template baseline-review.json
+
+# 2. Read the run, and fill in baseline-review.json yourself (see below).
+
+# 3. Check it, and write the receipt. The receipt is written only if the gate passes.
+apollo eval gate2 evals/runs/<run>.json --first-baseline --review baseline-review.json \
+  --write-acceptance baseline-acceptance.json
+```
+
+What you fill in. No tool, and no assistant, fills any of it for you:
+
+- `reviewer` and `review_date` (ISO, not in the future).
+- One entry under `decisions` for every case listed under `requirements`: `"decision": "accept"`
+  or `"waive"`, with a `date`. Those are every case with a manual rubric, in all its samples, and
+  every case with a deterministic failure. `waive` needs a written `reason`.
+- `designation`: set `no_incumbent_comparison` to `true`, and write a `note` in your own words
+  naming this run the first baseline.
+
+What it will not accept:
+
+- **A run that is not a complete, current, real-model run.** Offline, fake and replayed runs
+  report `infrastructure_only` and are never designated.
+- **A deterministic failure with no waiver.** Pass `--waivers waivers.yaml` on both commands. A
+  waiver for a baseline has the same fields as any other, with `incumbent_hash: first-baseline`
+  where a replacement's names the incumbent run. A failing case also needs the decision `waive`.
+- **`--first-baseline` together with `--incumbent`.** It is the run with nothing to compare it to.
+
+Afterwards, `baseline-acceptance.json` is what `--incumbent-acceptance` takes when the next model
+is compared with this one. Keep it with the run it names.
+
+Two things to know:
+
+- **A baseline belongs to one identity, one corpus and one compiler version.** Change any of them
+  and the accepted run can no longer be compared with a current one. Run the same model again and
+  designate it again, the same way.
+- **It says less than a later acceptance.** It says you read this run and chose it as the
+  starting point. It does not say the model matches anything.
 
 A run against `brain.fake` reports `infrastructure_only`, never `passed`: the offline brain proves
 the harness, not Apollo.
