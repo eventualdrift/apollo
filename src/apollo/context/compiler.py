@@ -48,7 +48,7 @@ from apollo.context.rules import (
     PROPOSAL_RULES_BY_VERSION,
 )
 from apollo.core.identity import Identity
-from apollo.errors import ApolloError, HistoryRoleError
+from apollo.errors import ApolloError, ContextOverflowError, HistoryRoleError
 from apollo.memory.models import MANIFEST_SOURCE_KIND, manifest_source_ref
 
 log = logging.getLogger(__name__)
@@ -108,6 +108,20 @@ _ATTRIBUTE = re.compile(r"[a-z0-9_.]+")
 
 class CompileInputError(ApolloError):
     """The compiler was handed something it must not build a bundle from."""
+
+
+class UnsendableContextError(ContextOverflowError):
+    """The context was assembled, and it does not fit (spec L).
+
+    `bundle` is what the compiler had built when it stopped: every block it
+    would have sent, and every block the budget dropped, with the reason. It
+    was never sent. The caller records it with the failed turn, so that what
+    did not fit is on record rather than only "it did not fit".
+    """
+
+    def __init__(self, message: str, bundle: ContextBundle) -> None:
+        super().__init__(message)
+        self.bundle = bundle
 
 
 @dataclass(frozen=True)
@@ -220,13 +234,6 @@ def _compile_reply(req: CompileRequest) -> ContextBundle:
         req.user_message_ref, req.user_message, est,
     )
 
-    allowance = conversation_allowance(
-        budget=req.budget,
-        policy_tokens=policy_tokens,
-        request_tokens=request_block.token_estimate,
-        data_tokens=data_tokens,
-    )
-
     # History is oldest-first; truncation removes from the oldest end.
     history_blocks = [
         _block(BlockType.CONVERSATION_RECENT,
@@ -234,10 +241,37 @@ def _compile_reply(req: CompileRequest) -> ContextBundle:
                Region.HISTORY, "message", m.message_id, m.content, est, role=m.role)
         for m in req.history
     ]
+
+    def unsendable(
+        overflow: ContextOverflowError, kept: list[ContextBlock],
+        dropped_history: list[tuple[ContextBlock, str]],
+    ) -> UnsendableContextError:
+        assembled = _finalise(
+            req, [*policy, *data, *kept, request_block], [*dropped, *dropped_history],
+            identity=req.identity, sendable=False,
+        )
+        return UnsendableContextError(str(overflow), assembled)
+
+    try:
+        allowance = conversation_allowance(
+            budget=req.budget,
+            policy_tokens=policy_tokens,
+            request_tokens=request_block.token_estimate,
+            data_tokens=data_tokens,
+        )
+    except ContextOverflowError as overflow:
+        # What must be sent is already too much: no history fits beside it.
+        raise unsendable(
+            overflow, [], [(block, "budget:conversation") for block in history_blocks]
+        ) from None
+
     kept, dropped_history = _fit_history(history_blocks, allowance)
-    assert_conversation_floor(
-        [b.source_ref for b in kept], [b.source_ref for b in history_blocks]
-    )
+    try:
+        assert_conversation_floor(
+            [b.source_ref for b in kept], [b.source_ref for b in history_blocks]
+        )
+    except ContextOverflowError as overflow:
+        raise unsendable(overflow, kept, dropped_history) from None
 
     ordered = [*policy, *data, *kept, request_block]
     return _finalise(req, ordered, [*dropped, *dropped_history], identity=req.identity)
@@ -451,6 +485,7 @@ def _finalise(
     dropped: list[tuple[ContextBlock, str]],
     *,
     identity: Identity | None,
+    sendable: bool = True,
 ) -> ContextBundle:
     blocks = tuple(
         ContextBlock(**{**b.__dict__, "position": i}) for i, b in enumerate(ordered)
@@ -482,7 +517,7 @@ def _finalise(
         dropped=tuple(dropped_entries),
     )
     log.info(
-        "context.compiled",
+        "context.compiled" if sendable else "context.overflow",
         extra={
             "purpose": str(req.purpose),
             "compiler_version": req.compiler_version,

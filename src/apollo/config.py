@@ -89,15 +89,26 @@ class Config:
             raise ConfigError(f"alias {alias!r} binds missing provider {provider_key!r}") from None
 
 
-def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> Config:
+def load_config(
+    path: Path | None = None,
+    env: dict[str, str] | None = None,
+    *,
+    require_database_dsn: bool = True,
+) -> Config:
+    """Read `apollo.toml` and the environment.
+
+    `require_database_dsn=False` is for the owner-only commands (`migrate`,
+    `provision`), which connect with `APOLLO_ADMIN_DSN` and need no runtime
+    connection. `database_dsn` is then empty when the variable is unset.
+    """
     env = dict(os.environ if env is None else env)
     path = path or Path(env.get("APOLLO_CONFIG", DEFAULT_CONFIG_PATH))
     if not path.exists():
         raise ConfigError(f"config file not found: {path}")
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
 
-    dsn = env.get("APOLLO_DATABASE_DSN")
-    if not dsn:
+    dsn = env.get("APOLLO_DATABASE_DSN", "")
+    if not dsn and require_database_dsn:
         raise ConfigError("APOLLO_DATABASE_DSN is not set (secrets come from the environment)")
 
     providers: dict[str, ProviderConfig] = {}

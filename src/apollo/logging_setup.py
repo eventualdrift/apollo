@@ -121,3 +121,15 @@ def configure_logging(level: str = "INFO", stream: Any | None = None) -> None:
         root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(level.upper())
+
+
+def redaction_installed() -> bool:
+    """Whether the root logger writes only through Apollo's redacting handler.
+
+    Until `configure_logging` has run, Python's own last-resort handler would
+    print an exception's text. Code that may run before then asks first.
+    """
+    handlers = logging.getLogger().handlers
+    return bool(handlers) and all(
+        any(isinstance(f, ApolloLogRecordFilter) for f in handler.filters) for handler in handlers
+    )

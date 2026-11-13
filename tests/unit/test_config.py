@@ -40,3 +40,16 @@ def test_an_expiry_that_is_not_a_whole_number_of_days_is_refused(tmp_path, value
     """Zero would expire a proposal before it could be answered; refuse it at start."""
     with pytest.raises(ConfigError, match="proposal_expiry_days"):
         _config(tmp_path, f"proposal_expiry_days = {value}")
+
+
+def test_the_runtime_dsn_is_required_unless_the_caller_says_it_is_not(tmp_path) -> None:
+    """`migrate` and `provision` connect as the owner and need no runtime connection."""
+    path = tmp_path / "apollo.toml"
+    path.write_text(f"[core]\n{MINIMAL}", encoding="utf-8")
+    with pytest.raises(ConfigError, match="APOLLO_DATABASE_DSN is not set"):
+        load_config(path, {})
+    owner_only = load_config(path, {"APOLLO_ADMIN_DSN": "host=example user=owner"},
+                             require_database_dsn=False)
+    assert owner_only.database_dsn == "" and owner_only.admin_dsn == "host=example user=owner"
+    assert load_config(path, ENV, require_database_dsn=False).database_dsn == (
+        ENV["APOLLO_DATABASE_DSN"])
