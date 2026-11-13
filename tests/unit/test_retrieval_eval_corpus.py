@@ -70,6 +70,27 @@ def test_a_malformed_case_is_refused(tmp_path: pathlib.Path, case: str, error: s
         load_case_file(path)
 
 
+def test_only_a_pinned_memory_may_be_expected_without_a_match(tmp_path: pathlib.Path) -> None:
+    """Spec E.6/2: a pinned memory is always present, and is support only if also matched.
+
+    So "this memory is retrieved, and there is no substantive match" is a
+    contradiction for an ordinary memory and a real expectation for a pinned one.
+    """
+    case = ("{id: x, type: direct_fact, split: tune, description: d, query: q,"
+            " must_retrieve: [%s], substantive_match_expected: false}")
+    memories = (
+        "    - {ref: a, scope: user, kind: fact, subject: s, content: c,"
+        " origin_tier: user_asserted, pinned: true}\n"
+        "    - {ref: b, scope: user, kind: fact, subject: s, content: d,"
+        " origin_tier: user_asserted}\n"
+    )
+    text = "version: 1\nfixture:\n  memories:\n" + memories + "cases:\n  - "
+    loaded = load_case_file(_write(tmp_path, text + case % "a" + "\n"))
+    assert loaded.cases[0].substantive_match_expected is False
+    with pytest.raises(RetrievalFixtureError, match="only a pinned memory is present"):
+        load_case_file(_write(tmp_path, text + case % "a, b" + "\n"))
+
+
 def test_a_superseded_memory_needs_its_correction(tmp_path: pathlib.Path) -> None:
     path = _write(tmp_path, (
         "version: 1\nfixture:\n  memories:\n"

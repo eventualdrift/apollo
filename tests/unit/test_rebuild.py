@@ -6,7 +6,7 @@ built, keep nothing but the manifest and the contents, and check that the
 rebuild is the same bundle: same blocks, same hash, same rendering. No
 database: `apollo.context.rebuild` reads none.
 
-The whole persona corpus is rebuilt under both compiler versions, since those
+The whole persona corpus is rebuilt under every compiler version, since those
 are the bundles every recorded eval invocation carries.
 """
 
@@ -33,7 +33,13 @@ from apollo.context.compiler import (
     retrieval_notice,
 )
 from apollo.context.estimator import CONSERVATIVE, estimator_named
-from apollo.context.rebuild import fixed_text, rebuilt_block, rebuilt_bundle, shown_matches
+from apollo.context.rebuild import (
+    fixed_text,
+    rebuilt_block,
+    rebuilt_bundle,
+    shown_matches,
+    shown_pinned,
+)
 from apollo.context.rules import (
     COMPILER_VERSIONS,
     CONTEXT_RULES_BY_VERSION,
@@ -64,19 +70,21 @@ def _rebuild(bundle: ContextBundle) -> ContextBundle:
                           estimator=CONSERVATIVE, manifest=manifest, blocks=blocks)
 
 
-def _memory(content: str, match: str, *, pinned: bool = False) -> MemoryItem:
-    return MemoryItem(memory_id=uuid.uuid4(), content=content, pinned=pinned,
-                      substantive=match != "recency", attributes=(*ATTRIBUTES, ("match", match)))
+def _memory(content: str, match: str) -> MemoryItem:
+    """`match` is how it was found: the search matched it, or it is pinned, or only recent."""
+    return MemoryItem(memory_id=uuid.uuid4(), content=content, pinned=match == "pinned",
+                      matched=match == "lexical", attributes=ATTRIBUTES)
 
 
-def _reply(retrieval: RetrievalInput, *, total: int = 8000) -> ContextBundle:
+def _reply(retrieval: RetrievalInput, *, total: int = 8000,
+           compiler_version: str = COMPILER_VERSIONS[-1]) -> ContextBundle:
     return compile_context(CompileRequest(
         purpose=Purpose.REPLY, user_message="Where is my router?", user_message_ref="m3",
         now=NOW, budget=Budget(total=total, identity_cap=4000), estimator=CONSERVATIVE,
         identity=compose_identity(REPO / "identity"),
         history=(HistoryMessage("m1", "user", "Good morning."),
                  HistoryMessage("m2", "apollo", "Morning, Janu.")),
-        retrieval=retrieval,
+        retrieval=retrieval, compiler_version=compiler_version,
     ))
 
 
@@ -99,17 +107,24 @@ def test_every_persona_case_rebuilds_to_the_bundle_that_was_compiled(
         assert render_chat(rebuilt).prompt_hash == render_chat(bundle).prompt_hash, case.id
 
 
-def test_a_bundle_with_memories_and_a_dropped_one_rebuilds_exactly() -> None:
+@pytest.mark.parametrize(("compiler_version", "matched", "shown"), [
+    ("compiler-v3", 2, 1),   # only what the search matched counts (spec E.6/2)
+    ("compiler-v2", 3, 2),   # there, the pinned memory counted too
+])
+def test_a_bundle_with_memories_and_a_dropped_one_rebuilds_exactly(
+    compiler_version: str, matched: int, shown: int
+) -> None:
     """The dropped entry is in the hash, and its content is not needed (spec F.6)."""
     retrieval = RetrievalInput(
-        memories=(_memory("Janu's sister is Mira.", "pinned", pinned=True),
+        memories=(_memory("Janu's sister is Mira.", "pinned"),
                   _memory("The router is in the hallway cupboard.", "lexical"),
                   _memory("Router notes: " + "x" * 7000, "lexical"),
                   _memory("Janu cycles on Fridays.", "recency")),
         query_text="Where is my router?", pinned_count=1, lexical_matches=2, recency_count=1,
-        substantive_matches=3,
+        pinned_or_lexical=3,
     )
-    bundle = _reply(retrieval)
+    bundle = _reply(retrieval, compiler_version=compiler_version)
+    assert bundle.compiler_version == compiler_version
     assert [e["drop_reason"] for e in bundle.manifest if not e["included"]] == [
         "budget:memory_cap"]
     rebuilt = _rebuild(bundle)
@@ -119,13 +134,19 @@ def test_a_bundle_with_memories_and_a_dropped_one_rebuilds_exactly() -> None:
                                        bundle.taint, bundle.identity_hash)
     assert render_chat(rebuilt) == render_chat(bundle)
 
-    # What the notice needs that is not in the retrieval record is in the manifest.
-    assert shown_matches(bundle.manifest_list()) == 2
+    # What the notice needs that is not in the retrieval record is in the
+    # manifest, read by the rule of the version that built it.
+    manifest = bundle.manifest_list()
+    assert retrieval.substantive_matches(compiler_version) == matched
+    assert (shown_matches(manifest, compiler_version), shown_pinned(manifest)) == (shown, 1)
     [notice] = [b for b in bundle.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
+    assert f"Substantive matches: {matched}\nNot shown: 1 matched" in notice.content
     assert notice.content == retrieval_notice(
         RetrievalInput(query_text="Where is my router?", pinned_count=1, lexical_matches=2,
-                       recency_count=1, substantive_matches=3),
-        shown=shown_matches(bundle.manifest_list()),
+                       recency_count=1, pinned_or_lexical=3),
+        shown=shown_matches(manifest, compiler_version),
+        pinned_shown=shown_pinned(manifest),
+        compiler_version=compiler_version,
     )
 
 
@@ -172,8 +193,9 @@ def test_each_compiler_version_keeps_its_own_fixed_texts() -> None:
     # turn's search found, and only the failure notice is fixed.
     assert fixed_text(BlockType.RETRIEVAL_NOTICE, "compiler-v1") == NO_RETRIEVAL_NOTICE
     assert fixed_text(BlockType.RETRIEVAL_ERROR, "compiler-v1") is None
-    assert fixed_text(BlockType.RETRIEVAL_NOTICE, "compiler-v2") is None
-    assert fixed_text(BlockType.RETRIEVAL_ERROR, "compiler-v2") == RETRIEVAL_ERROR_NOTICE
+    for version in ("compiler-v2", "compiler-v3"):
+        assert fixed_text(BlockType.RETRIEVAL_NOTICE, version) is None
+        assert fixed_text(BlockType.RETRIEVAL_ERROR, version) == RETRIEVAL_ERROR_NOTICE
     assert fixed_text(BlockType.CONTEXT_RULES, "compiler-v0") is None
 
 

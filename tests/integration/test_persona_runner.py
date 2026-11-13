@@ -565,7 +565,7 @@ def test_a_run_compiles_what_the_run_record_alone_can_rebuild(
             identity_cap=settings["identity_cap"], now=record.started_at,
         )
         assert entry["bundle_hashes_seen"] == [rebuilt.bundle_hash], case.id
-    assert record.compiler_version == "compiler-v2"
+    assert record.compiler_version == "compiler-v3"
 
 
 class _Recording(FakeBrain):

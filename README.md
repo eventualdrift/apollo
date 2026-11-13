@@ -161,6 +161,10 @@ apollo memory list              # --status archived | superseded | tombstoned | 
 apollo memory forget <id>       # the memory and every version of it; --yes when piped
 ```
 
+`apollo memory add --pinned` makes a memory that is in every reply's context, whatever is asked.
+Being pinned does not make it an answer: Apollo is told a memory matched your message only when
+the search matched it. Of two memories that match equally, the newer one leads.
+
 A memory's subject and content are read from stdin, prompted at a terminal or piped (for `add`,
 the first line is the subject and the rest the content). No argument takes them, so they stay
 out of shell history and the process list. A pipe is only as private as its source: a file
@@ -289,8 +293,8 @@ it again, and compares both hashes. It reports two statuses per call:
   it would have sent. That is what makes a failure and its retry comparable.
 - **Correcting, confirming, contradicting or archiving a memory changes no earlier turn.** The
   corrected row keeps its text, and a memory's provenance as it was shown is in the manifest.
-- **Each call is replayed with the versions it recorded**, not today's: `compiler-v1` and
-  `compiler-v2`, and the `chat-v1`, `chat-v2` and `chat-v3` renderers. A provider configured
+- **Each call is replayed with the versions it recorded**, not today's: `compiler-v1`,
+  `compiler-v2` and `compiler-v3`, and the `chat-v1`, `chat-v2` and `chat-v3` renderers. A provider configured
   without a system role records its own version (`chat-v3-nosystem`), since the request it is
   sent is different.
 - **Eval turns do not replay from the database.** A persona case's text lives in its case file,

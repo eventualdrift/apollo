@@ -81,7 +81,7 @@ def compile_input(found: TurnRetrieval, *, now: datetime) -> RetrievalInput:
     outcome = found.outcome
     if outcome is None:
         return RetrievalInput.failure()
-    substantive = {
+    pinned_or_lexical = {
         hit.memory_id
         for strategy in (PINNED, LEXICAL)
         for hit in outcome.result(strategy).hits
@@ -92,7 +92,7 @@ def compile_input(found: TurnRetrieval, *, now: datetime) -> RetrievalInput:
         pinned_count=len(outcome.result(PINNED).hits),
         lexical_matches=len(outcome.result(LEXICAL).hits),
         recency_count=len(outcome.result(RECENCY).hits),
-        substantive_matches=len(substantive),
+        pinned_or_lexical=len(pinned_or_lexical),
     )
 
 
@@ -104,7 +104,8 @@ def _item(memory: Retrieved, now: datetime) -> MemoryItem:
         memory_id=memory.memory_id,
         content=memory.content,
         pinned=memory.pinned,
-        substantive=memory.substantive,
+        matched=memory.substantive,
+        # The compiler adds `match`: what counts as one is its version's to say.
         attributes=(
             ("scope", str(provenance.scope)),
             ("origin", str(provenance.origin_tier)),
@@ -112,7 +113,6 @@ def _item(memory: Retrieved, now: datetime) -> MemoryItem:
             ("confidence", f"{provenance.confidence:.2f}"),
             ("obs", str(provenance.observations)),
             ("age", f"{age_days}d"),
-            ("match", memory.match),
         ),
     )
 

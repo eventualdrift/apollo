@@ -1,5 +1,6 @@
-# A pinned memory: always included, and (spec E.3 as written) always counted
-# as substantive support, even for an unrelated question.
+# A pinned memory: always included, and support only when the search also
+# matches it (spec E.6/2; Janu, 2026-11-13). As spec E.3 was first written it
+# was always support, so an unrelated question never got "nothing matched".
 version: 1
 fixture:
   memories:
@@ -21,8 +22,8 @@ cases:
   - id: pin_002
     type: direct_fact
     split: holdout
-    description: "An unrelated question still gets the pinned memory, first."
+    description: "An unrelated question still gets the pinned memory, first, and no support."
     query: "what's the capital of Peru?"
     must_retrieve: [pronunciation]
     max_rank: 1
-    substantive_match_expected: true
+    substantive_match_expected: false

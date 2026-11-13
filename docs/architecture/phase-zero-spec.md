@@ -999,6 +999,41 @@ Metrics: `recall@5`, `precision@5`, `mean_rank_of_expected`, and **`correct_empt
 proportion of `substantive_match_expected: false` cases answered correctly. That last is the direct
 defence against fabricated memory and the one most retrieval benchmarks omit.
 
+### E.6 Clarifications (2026-11-13)
+
+Decided by Janu on the two questions the retrieval suite raised at step 11. Additive: the text of
+§E.1–§E.5 and §F.3 is unchanged, and where it reads differently, this section governs. Code cites
+these as `spec E.6/<n>`.
+
+1. **Of two equal matches, the newer memory leads.** §E.3's merge breaks ties "by `memory_id`
+   ascending", which put the older of two equally matching memories first: asked about a routine
+   that had changed, Apollo led with the old one. The order is now score, descending; then derived
+   confidence, higher first (§D.8); then `created_at`, newer first; then `memory_id` ascending for
+   what is still tied. Pinned memories still precede everything else, and take this same order
+   among themselves: those the search matched first, by their match score.
+2. **A pinned memory is support only when it also matches.** §E.3 counted any pinned result as
+   substantive support, so while anything was pinned, no question was ever told that nothing
+   matched. Now:
+   - a pinned memory is still always included, first, and never truncated;
+   - `substantive_support = (lexical results above floor ≠ ∅)`. A pinned memory counts exactly
+     when it is also one of those, and `turn_retrieval.substantive` is false for `pinned`;
+   - a memory's `match` says why it is present for this message: `lexical` if the search matched
+     it, whether or not it is pinned; otherwise `pinned`; otherwise `recency`;
+   - `Substantive matches` in the notice (§F.3) counts lexical matches.
+
+**What follows from (2).** These are Claude's wordings of the consequence, recorded here so that
+none of it is a silent change:
+
+- §F.3's rendering is unchanged whenever nothing is pinned.
+- With a memory pinned, the `Strategies` line reads
+  `pinned(N, always present — support only if also matched)`.
+- When nothing matched and a pinned memory is shown, the closing paragraph does not say "No stored
+  memory bears on this". A pinned memory may bear on a message the search did not match it to. It
+  says that nothing was matched, that pinned memories are present whatever is asked and are to be
+  used only where they bear on the message, and then §F.3's own sentences on what absence means.
+- Both decisions change what is compiled from the same state, so they are `compiler-v3` (§F.4,
+  §J.5). `compiler-v2` is kept for replay; no real model was ever sent it.
+
 ---
 
 ## F. Context compiler
@@ -1853,3 +1888,21 @@ All of §A–§O.
 | Additional invocation purposes | A specification change justifies one — not by drift |
 | Action policy engine | Any action capability is proposed |
 | Device auth, remote access | A non-local client exists |
+
+### P.4 Decisions of 2026-11-13
+
+Janu's answers to the questions open at the end of step 16. Additive, as §D.9 is: nothing above is
+rewritten, and where it reads differently, the entry named here governs.
+
+| Question | Decision | Where it governs |
+|---|---|---|
+| When two memories match equally, which leads? | The newer one. | §E.6/1 |
+| Is a pinned memory always support? | Only when the search also matched it. | §E.6/2 |
+| How is a proposal recorded when a forget declines it? | `ignored`, with audit reason `memory_tombstoned`. | §C.9 statuses; the proposal's text is cleared as for any resolution |
+| What is recorded when a context is too large to send? | One `model_invocation` row, `failed`, for the call that was not made, carrying the manifest of what was assembled. | §L "Context overflow"; ADR-0013 otherwise unchanged |
+| The 25 retrieval cases (§E.5) | Reviewed and accepted. | `evals/retrieval/cases/` |
+| Command line, or the HTTP service of §A.1 and §M.1? | The command line calls Core directly for the product trial. The service is built when a second client needs it. | §D.9/5; §P.3 "Device auth, remote access" |
+
+On the fourth row: ADR-0013 says a row is one actual model call. This is the one row that stands
+for a call refused before it was made. It exists so that §L's "manifest still persisted" holds and
+replay can show what did not fit. It has no output, and it is never retried.

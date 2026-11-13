@@ -28,8 +28,10 @@ from apollo.context.bundle import (
     compute_bundle_hash,
 )
 from apollo.context.compiler import (
+    MATCH_PINNED,
     NO_RETRIEVAL_NOTICE,
     RETRIEVAL_ERROR_NOTICE,
+    labels_that_match,
     memory_header_tokens,
 )
 from apollo.context.estimator import TokenEstimator
@@ -39,9 +41,6 @@ from apollo.context.rules import (
     CONTEXT_RULES_BY_VERSION,
     PROPOSAL_RULES_BY_VERSION,
 )
-
-#: A MEMORY block's `match` attribute for one found only because it is recent.
-MATCH_RECENCY = "recency"
 
 
 def fixed_text(block_type: BlockType, compiler_version: str) -> str | None:
@@ -62,18 +61,28 @@ def fixed_text(block_type: BlockType, compiler_version: str) -> str | None:
     return RETRIEVAL_ERROR_NOTICE if block_type is BlockType.RETRIEVAL_ERROR else None
 
 
-def shown_matches(manifest: Sequence[Mapping[str, Any]]) -> int:
-    """How many memories the bundle shows that matched, rather than being merely recent.
+def shown_matches(manifest: Sequence[Mapping[str, Any]], compiler_version: str) -> int:
+    """How many memories the bundle shows that count as matches.
 
     The notice says how many matched and how many of those are shown. The
-    first is in the retrieval record; the second is here, in the manifest:
-    an included MEMORY entry whose recorded `match` is not `recency`.
+    first is in the retrieval record; the second is here, in the manifest: an
+    included MEMORY entry whose recorded `match` is one the compiler version
+    counted (compiler-v2: pinned or lexical; from compiler-v3: lexical).
     """
-    return sum(
-        1 for entry in manifest
+    counted = labels_that_match(compiler_version)
+    return sum(label in counted for label in _shown_labels(manifest))
+
+
+def shown_pinned(manifest: Sequence[Mapping[str, Any]]) -> int:
+    """How many memories the bundle shows as `match=pinned`."""
+    return sum(label == MATCH_PINNED for label in _shown_labels(manifest))
+
+
+def _shown_labels(manifest: Sequence[Mapping[str, Any]]) -> list[str | None]:
+    return [
+        dict(_attributes(entry)).get("match") for entry in manifest
         if entry.get("included") and entry.get("block_type") == BlockType.MEMORY
-        and dict(_attributes(entry)).get("match") != MATCH_RECENCY
-    )
+    ]
 
 
 def rebuilt_block(

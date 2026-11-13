@@ -1,4 +1,11 @@
-"""`pinned`: every active pinned memory, no query. Substantive whenever non-empty (spec E.3)."""
+"""`pinned`: every active pinned memory, no query. Always included, never support by itself.
+
+Spec E.3 counted any pinned result as substantive support. Spec E.6/2 (Janu,
+2026-11-13) changed that: while any memory was pinned, every question had
+"support" and the notice that nothing matched was never given. A pinned memory
+is support only when the search also matched it, and then it is the lexical
+strategy that says so.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +33,7 @@ class PinnedStrategy:
             strategy=PINNED,
             query_text=None,
             hits=hits,
-            substantive=bool(hits),
+            substantive=False,
             duration_ms=_elapsed_ms(started),
         )
 

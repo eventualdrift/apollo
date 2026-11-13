@@ -1,6 +1,8 @@
-"""Merge and the substantive-match rule (spec E.3).
+"""Merge and the substantive-match rule (spec E.3, as clarified by E.6).
 
 - `pinned` bypasses ranking and is always included, ahead of everything else.
+  Among themselves, pinned memories take the same order as the rest: the ones
+  the search matched first, by score, and then the same tiebreakers.
 - Every other strategy's scores are normalised to [0, 1] by dividing by that
   strategy's best score on this query, so its best result is 1.0. (Lexical
   scores are small absolute values, around 0.03 to 0.1 for a typical match;
@@ -10,13 +12,16 @@
 - Each result is then weighted (`lexical` 1.0, `recency` 0.3), deduplicated
   keeping its maximum, and sorted descending. Equal scores are ordered by
   derived confidence, higher first (spec D.8, ADR-0005: confidence "is used as
-  a ranking tiebreaker"), and what is still tied by `memory_id` ascending, so
-  the order is total and deterministic (spec E.3, F.4). The whole list is then
-  truncated to K. Pinned memories are never truncated: "always know this" is a
-  promise, so if there were more than K of them they would all still be
-  included.
-- `substantive_support` is pinned results or lexical results above the floor.
-  Recency never counts and can never suppress the negative signal.
+  a ranking tiebreaker"); then the newer memory first (spec E.6/1), so that of
+  two claims that match equally the current one leads; and what is still tied
+  by `memory_id` ascending, so the order is total and deterministic (spec E.3,
+  F.4). The whole list is then truncated to K. Pinned memories are never
+  truncated: "always know this" is a promise, so if there were more than K of
+  them they would all still be included.
+- `substantive_support` is lexical results above the floor, and nothing else
+  (spec E.6/2). A pinned memory is always present, which is not the same as
+  bearing on what was asked: it is support only when the search also matched
+  it. Recency never counts. Neither can suppress the negative signal.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from apollo.memory.retrieval.base import (
 
 
 def substantive_support(results: tuple[StrategyResult, ...]) -> bool:
-    return any(r.substantive for r in results if r.strategy in (PINNED, LEXICAL))
+    return any(r.substantive for r in results if r.strategy == LEXICAL)
 
 
 def merge(
@@ -44,6 +49,7 @@ def merge(
     weights = {LEXICAL: settings.lexical_weight, RECENCY: settings.recency_weight}
     pinned: dict[uuid.UUID, Hit] = {}
     best: dict[uuid.UUID, tuple[float, Hit]] = {}
+    matched: dict[uuid.UUID, float] = {}
     found_by: dict[uuid.UUID, list[str]] = {}
 
     for result in results:
@@ -55,18 +61,30 @@ def merge(
                 continue
             normalised = hit.score / top if top > 0 else 0.0
             weighted = normalised * weights[result.strategy]
+            if result.strategy == LEXICAL:
+                matched[hit.memory_id] = weighted
             if hit.memory_id not in best or weighted > best[hit.memory_id][0]:
                 best[hit.memory_id] = (weighted, hit)
 
+    def order(item: tuple[float, uuid.UUID, Hit]) -> tuple[float, float, float, uuid.UUID]:
+        score, memory_id, hit = item
+        return (-score, -hit.provenance.confidence, -hit.provenance.created_at.timestamp(),
+                memory_id)
+
+    # A pinned memory is placed by how well the search matched it, and by
+    # nothing else a strategy said: being recent is not a match (spec E.3).
     always = [
         Retrieved(memory_id, 1.0, True, tuple(found_by[memory_id]), hit.subject, hit.content,
                   hit.provenance)
-        for memory_id, hit in sorted(pinned.items())
+        for _, memory_id, hit in sorted(
+            ((matched.get(memory_id, 0.0), memory_id, hit) for memory_id, hit in pinned.items()),
+            key=order,
+        )
     ]
     ranked = sorted(
         ((score, memory_id, hit) for memory_id, (score, hit) in best.items()
          if memory_id not in pinned),
-        key=lambda item: (-item[0], -item[2].provenance.confidence, item[1]),
+        key=order,
     )
     room = max(settings.k - len(always), 0)
     rest = [

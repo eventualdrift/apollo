@@ -106,12 +106,21 @@ def test_only_active_memories_are_retrieved(db: Database) -> None:
 # -- pinned -------------------------------------------------------------------------
 
 
-def test_pinned_memories_are_always_included_and_are_support(db: Database) -> None:
+def test_pinned_memories_are_always_included_and_are_support_only_when_matched(
+    db: Database
+) -> None:
+    """Spec E.6/2 (Janu, 2026-11-13): always present; support only if the search matched it."""
     pinned = _remember(db, "Janu's name is pronounced YAH-noo", pinned=True)
     outcome = _retrieve(db, "what's the weather like on Mars?")
     assert _ids(outcome, PINNED) == [pinned]
     assert outcome.merged[0].memory_id == pinned and outcome.merged[0].pinned
-    assert outcome.substantive_support
+    assert outcome.merged[0].match == PINNED
+    assert not outcome.substantive_support and not outcome.result(PINNED).substantive
+
+    asked = _retrieve(db, "how is my name pronounced?")
+    assert asked.merged[0].memory_id == pinned and asked.merged[0].pinned
+    assert asked.merged[0].match == LEXICAL
+    assert asked.substantive_support and not asked.result(PINNED).substantive
 
 
 def test_pinned_memories_are_never_truncated(db: Database) -> None:

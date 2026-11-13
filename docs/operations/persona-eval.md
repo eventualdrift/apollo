@@ -61,11 +61,16 @@ no fixture memories in it.
 
 ### Compiler and render versions
 
-Runs record `compiler-v2` and `chat-v3` from step 11 on. The M2 runs were compiled by
-`compiler-v1`, so Gate 2 now reports them as a stale compiler version: they remain evidence of
-what they measured, and are not comparable with a new run. Spec J.5 asks for the persona suite on
-a compiler version change. That run needs a real model and has not been made; see
-[`../PROJECT_STATE.md`](../PROJECT_STATE.md).
+Runs now record `compiler-v3` and `chat-v3`. The M2 runs were compiled by `compiler-v1`, so Gate 2
+reports them as a stale compiler version: they remain evidence of what they measured, and are not
+comparable with a new run.
+
+- `compiler-v2` (step 11) put memories and the retrieval notice into every reply.
+- `compiler-v3` (2026-11-13) changed what a pinned memory counts as, and the order of equal
+  matches (spec E.6).
+
+No real model has been sent either. Spec J.5 asks for the persona suite on a compiler version
+change; that run is step 2 of [`acceptance.md`](acceptance.md).
 
 A provider bound with `supports_system_role = false` is sent the policy region as its first user
 message, which is a different request. It records `chat-v3-nosystem`, so a run against it is

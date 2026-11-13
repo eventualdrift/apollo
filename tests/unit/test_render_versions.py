@@ -82,7 +82,7 @@ def test_every_persona_case_renders_identically_under_chat_v1_and_chat_v2(
 
 
 @pytest.mark.parametrize("max_context", [9216, 16384])
-@pytest.mark.parametrize("compiler_version", ["compiler-v1", "compiler-v2"])
+@pytest.mark.parametrize("compiler_version", ["compiler-v1", "compiler-v2", "compiler-v3"])
 def test_every_persona_case_renders_identically_under_chat_v2_and_chat_v3(
     max_context: int, compiler_version: str,
 ) -> None:
@@ -102,7 +102,7 @@ def test_every_persona_case_renders_identically_under_chat_v2_and_chat_v3(
 
 MEMORY_ID = __import__("uuid").UUID("018f2c00-0000-7000-8000-000000000001")
 ATTRIBUTES = (("scope", "relationship"), ("origin", "user_asserted"), ("support", "confirmed"),
-              ("confidence", "0.80"), ("obs", "3"), ("age", "41d"), ("match", "lexical"))
+              ("confidence", "0.80"), ("obs", "3"), ("age", "41d"))
 
 
 def _memory_bundle():  # type: ignore[no-untyped-def]
@@ -112,10 +112,10 @@ def _memory_bundle():  # type: ignore[no-untyped-def]
         estimator=CONSERVATIVE, identity=compose_identity(REPO / "identity"),
         retrieval=RetrievalInput(
             memories=(MemoryItem(
-                memory_id=MEMORY_ID, pinned=False, substantive=True, attributes=ATTRIBUTES,
+                memory_id=MEMORY_ID, pinned=False, matched=True, attributes=ATTRIBUTES,
                 content="Janu prefers Apollo not to restate his question before answering.",
             ),),
-            query_text="Recap first, or just answer?", lexical_matches=1, substantive_matches=1,
+            query_text="Recap first, or just answer?", lexical_matches=1, pinned_or_lexical=1,
         ),
     ))
 
@@ -138,7 +138,7 @@ def test_chat_v2_renders_the_same_bundle_without_the_attributes() -> None:
     bundle = _memory_bundle()
     v2 = render_chat(bundle, render_version="chat-v2").messages[-1].content
     v3 = render_chat(bundle, render_version="chat-v3").messages[-1].content
-    header = "".join(f" {key}={value}" for key, value in ATTRIBUTES)
+    header = "".join(f" {key}={value}" for key, value in (*ATTRIBUTES, ("match", "lexical")))
     assert f"<<<MEMORY tier=T3 ref=memory:{MEMORY_ID}>>>" in v2
     assert v3.replace(header, "") == v2
 

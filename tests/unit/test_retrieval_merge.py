@@ -24,17 +24,18 @@ def _id(n: int) -> uuid.UUID:
     return uuid.UUID(int=n)
 
 
-def _provenance(confirms: int = 0, contradicts: int = 0) -> Provenance:
+def _provenance(confirms: int = 0, contradicts: int = 0, *, day: int = 1) -> Provenance:
     return Provenance(
         scope=Scope.USER, origin_tier=OriginTier.USER_ASSERTED,
-        created_at=datetime(2026, 11, 1, tzinfo=UTC), observations=1 + confirms + contradicts,
+        created_at=datetime(2026, 11, day, tzinfo=UTC), observations=1 + confirms + contradicts,
         counts=ObservationCounts(confirms, contradicts),
     )
 
 
 def _result(strategy: str, *scored: tuple[int, float]) -> StrategyResult:
     hits = tuple(Hit(_id(n), score, "s", f"memory {n}", _provenance()) for n, score in scored)
-    return StrategyResult(strategy, None, hits, strategy != RECENCY and bool(hits), 0)
+    # Only a lexical match is support (spec E.6/2): pinned and recency never are.
+    return StrategyResult(strategy, None, hits, strategy == LEXICAL and bool(hits), 0)
 
 
 def test_weights_dedupe_keep_the_maximum() -> None:
@@ -56,9 +57,44 @@ def test_a_genuine_match_outranks_an_unrelated_recent_memory() -> None:
     assert [round(m.score, 3) for m in merged] == [1.0, 0.5, 0.3, 0.201, 0.099]
 
 
-def test_ties_break_by_memory_id_ascending() -> None:
+def test_what_is_still_tied_breaks_by_memory_id_ascending() -> None:
+    """Same score, same confidence, made at the same instant: the order is still total."""
     merged = merge((_result(LEXICAL, (9, 0.5), (3, 0.5), (5, 0.5)),), RetrievalSettings())
     assert [m.memory_id for m in merged] == [_id(3), _id(5), _id(9)]
+
+
+def test_of_two_equal_matches_the_newer_memory_leads() -> None:
+    """Spec E.6/1 (Janu, 2026-11-13): "my gym routine" in September, and since November.
+
+    Both match the question equally. The older one has the lower id, and used
+    to lead for that reason alone.
+    """
+    def hit(n: int, day: int) -> Hit:
+        return Hit(_id(n), 0.5, "s", f"memory {n}", _provenance(day=day))
+
+    merged = merge((
+        StrategyResult(LEXICAL, "q", (hit(1, day=2), hit(2, day=20), hit(3, day=9)), True, 0),
+    ), RetrievalSettings())
+    assert [m.memory_id for m in merged] == [_id(2), _id(3), _id(1)]
+
+
+def test_a_better_attested_memory_still_leads_a_newer_one() -> None:
+    """Spec D.8: confidence is the first tiebreaker. Newness decides only what it leaves tied."""
+    old_confirmed = Hit(_id(1), 0.5, "s", "memory 1", _provenance(confirms=2, day=2))
+    new_asserted = Hit(_id(2), 0.5, "s", "memory 2", _provenance(day=20))
+    merged = merge((
+        StrategyResult(LEXICAL, "q", (new_asserted, old_confirmed), True, 0),
+    ), RetrievalSettings())
+    assert [m.memory_id for m in merged] == [_id(1), _id(2)]
+
+
+def test_a_stronger_match_still_leads_a_newer_one() -> None:
+    older_better = Hit(_id(1), 0.6, "s", "memory 1", _provenance(day=2))
+    newer_weaker = Hit(_id(2), 0.5, "s", "memory 2", _provenance(day=20))
+    merged = merge((
+        StrategyResult(LEXICAL, "q", (newer_weaker, older_better), True, 0),
+    ), RetrievalSettings())
+    assert [m.memory_id for m in merged] == [_id(1), _id(2)]
 
 
 def test_pinned_lead_and_truncation_is_to_k_overall() -> None:
@@ -68,6 +104,41 @@ def test_pinned_lead_and_truncation_is_to_k_overall() -> None:
     ), RetrievalSettings(k=4))
     assert [m.memory_id for m in merged] == [_id(7), _id(1), _id(2), _id(3)]
     assert merged[0].pinned and not merged[1].pinned
+
+
+def test_pinned_memories_are_ordered_among_themselves_by_the_same_rule() -> None:
+    """Spec E.6/1 holds inside the pinned group too (Codex, PR #31).
+
+    Pinned memories were listed by id, oldest first, whatever the search
+    found. Two pinned claims that matched equally still led with the older.
+    """
+    def pinned(n: int, day: int, **counts: int) -> Hit:
+        return Hit(_id(n), 1.0, "s", f"memory {n}", _provenance(day=day, **counts))
+
+    def matched(n: int, score: float, day: int, **counts: int) -> Hit:
+        return Hit(_id(n), score, "s", f"memory {n}", _provenance(day=day, **counts))
+
+    merged = merge((
+        StrategyResult(PINNED, None, (
+            pinned(1, day=2), pinned(2, day=20), pinned(3, day=9), pinned(4, day=5),
+            pinned(5, day=6, confirms=2),
+        ), False, 0),
+        StrategyResult(LEXICAL, "q", (
+            matched(1, 0.5, day=2), matched(2, 0.5, day=20),   # equal matches, both pinned
+            matched(4, 0.9, day=5),                            # the best match, also pinned
+            matched(8, 0.9, day=1),                            # as good, and not pinned
+        ), True, 0),
+        StrategyResult(RECENCY, None, (pinned(3, day=9),), False, 0),
+    ), RetrievalSettings())
+    assert [m.memory_id for m in merged] == [
+        _id(4),   # pinned, best match
+        _id(2),   # pinned, equal match with 1, and newer
+        _id(1),
+        _id(5),   # pinned, unmatched: better attested
+        _id(3),   # pinned, unmatched; being recent is not a match and does not lift it
+        _id(8),   # an unpinned memory never precedes a pinned one, however well it matches
+    ]
+    assert all(m.pinned for m in merged[:5]) and not merged[5].pinned
 
 
 def test_a_pinned_memory_also_found_lexically_appears_once() -> None:
@@ -80,8 +151,25 @@ def test_recency_alone_is_never_support() -> None:
     assert not substantive_support((
         _result(PINNED), _result(LEXICAL), _result(RECENCY, (1, 1.0), (2, 0.5)),
     ))
-    assert substantive_support((_result(PINNED, (1, 1.0)), _result(LEXICAL)))
     assert substantive_support((_result(PINNED), _result(LEXICAL, (1, 0.1))))
+
+
+def test_a_pinned_memory_is_support_only_when_it_also_matches() -> None:
+    """Spec E.6/2 (Janu, 2026-11-13). Pinned means always present, not always relevant.
+
+    While any memory was pinned, every question had "support", so the notice
+    that nothing matched was never given, whatever was asked.
+    """
+    pinned_only = (_result(PINNED, (1, 1.0)), _result(LEXICAL), _result(RECENCY))
+    assert not substantive_support(pinned_only)
+    assert [m.memory_id for m in merge(pinned_only, RetrievalSettings())] == [_id(1)]  # present
+
+    also_matched = (_result(PINNED, (1, 1.0)), _result(LEXICAL, (1, 0.2)), _result(RECENCY))
+    assert substantive_support(also_matched)
+    # Even a pinned result wrongly flagged as support does not count: the rule
+    # reads the lexical result alone.
+    flagged = StrategyResult(PINNED, None, _result(PINNED, (1, 1.0)).hits, True, 0)
+    assert not substantive_support((flagged, _result(LEXICAL), _result(RECENCY)))
 
 
 def test_the_any_word_query_is_plain_words_joined_by_or() -> None:
@@ -133,12 +221,16 @@ def test_equal_scores_are_ordered_by_confidence_before_memory_id() -> None:
     assert [m.provenance.confidence for m in merged] == [0.8, 0.7, 0.45]
 
 
-def test_a_memory_is_labelled_by_the_strongest_way_it_was_found() -> None:
+def test_a_memory_is_labelled_by_whether_it_matched_this_message() -> None:
+    """A match is a lexical match. Pinned says only why an unmatched memory is present."""
     merged = merge((
-        _result(PINNED, (1, 1.0)),
+        _result(PINNED, (1, 1.0), (4, 1.0)),
         _result(LEXICAL, (1, 0.4), (2, 0.2)),
         _result(RECENCY, (2, 1.0), (3, 0.5)),
     ), RetrievalSettings())
-    assert [(m.memory_id, m.match, m.substantive) for m in merged] == [
-        (_id(1), PINNED, True), (_id(2), LEXICAL, True), (_id(3), RECENCY, False),
+    assert [(m.memory_id, m.pinned, m.match, m.substantive) for m in merged] == [
+        (_id(1), True, LEXICAL, True),      # pinned, and it matched
+        (_id(4), True, PINNED, False),      # pinned, and it did not
+        (_id(2), False, LEXICAL, True),
+        (_id(3), False, RECENCY, False),
     ]

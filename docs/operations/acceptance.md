@@ -60,7 +60,8 @@ apollo eval run --brain brain.local
 Use a database that holds no fixture memories; a new one is simplest.
 
 - **This is also the run §J.5 requires.** `compiler-v2` put memories and the retrieval notice
-  into every reply. No model has been sent a `compiler-v2` context yet.
+  into every reply, and `compiler-v3` changed what a pinned memory counts as. No model has been
+  sent either yet.
 - **Criterion 29:** the run lists its deterministic failures. Each must be fixed, or carry a
   dated waiver with its reason. There is no pass rate to reach.
 - **Criterion 3:** case `per_025_current_request_is_the_task` passes.
@@ -351,8 +352,8 @@ Each title is the spec's. Under it: what holds it, and what is open.
   `english` and `simple`
 - `tests/integration/test_retrieval_eval.py::test_the_defaults_are_what_the_tuning_cases_select`
 - `tests/integration/test_retrieval_eval.py::test_the_recorded_sweep_is_what_a_rerun_produces`
-- The baseline is `evals/retrieval/baseline.json`. Two cases (`rec_001`, `rec_002`) are recorded
-  there as known failures. They wait on the first spec question below.
+- The baseline is `evals/retrieval/baseline.json`. All 25 cases pass under `english`, the
+  configuration in use. The two that failed (`rec_001`, `rec_002`) pass since spec §E.6/1.
 
 ### 25. Log redaction — PROVEN
 
@@ -397,12 +398,12 @@ None of these blocked the work so far. The first two block the gates.
    If the server wants a key, the key goes in the session environment's secret settings, and
    `apollo.toml` names only the variable. It never goes in chat, a file or a commit.
 2. **How the first accepted model is chosen** (step 8). Without it Gate 2 cannot pass.
-3. **Two spec questions** from the retrieval suite, recorded in
-   [`../PROJECT_STATE.md`](../PROJECT_STATE.md) under step 11:
-   - when two memories match equally, should the newer one rank first? Claude recommends yes.
-     Cases `rec_001` and `rec_002` fail until this is decided.
-   - should a pinned memory count as support only when it also matches? Claude recommends yes.
-4. **Your review of the 25 retrieval cases** in `evals/retrieval/cases/`.
+3. **Two spec questions** from the retrieval suite. *Decided on 2026-11-13, and built
+   (spec §E.6):*
+   - when two memories match equally, the newer one ranks first;
+   - a pinned memory counts as support only when the search also matched it.
+4. **Your review of the 25 retrieval cases** in `evals/retrieval/cases/`. *Accepted on
+   2026-11-13.*
 5. **Readings Claude made where the spec was silent.** Each is recorded in
    [`../PROJECT_STATE.md`](../PROJECT_STATE.md) under the step that made it. The two you are most
    likely to have a view on:
