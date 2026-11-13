@@ -14,9 +14,11 @@ What a case checks, against the merged list retrieval hands to the compiler:
   included (a superseded or archived row must never reach context);
 - `substantive_support` equals `substantive_match_expected`, where given.
 
-Metrics (spec E.5), over the *support* list: pinned and lexical results above
-the floor, in merged order. Recency is a fallback, not a match, so it is kept
-out of precision and recall.
+Metrics (spec E.5), over what retrieval included on purpose: pinned and
+lexical results above the floor, in merged order. Recency is a fallback, so it
+is kept out of precision and recall. (Whether there is *support* is narrower:
+since spec E.6/2 a pinned memory is included always and is support only when
+the search also matched it.)
 - `recall@5`: per case with `must_retrieve`, the share found in the top 5.
 - `precision@5`: per case with any support, the share of the top 5 that is in
   `must_retrieve` or `may_retrieve`.
@@ -202,7 +204,8 @@ def load_case_file(path: pathlib.Path) -> CaseFile:
     if len(set(refs)) != len(refs):
         raise RetrievalFixtureError(f"{where}: duplicate memory refs")
     _check_corrections(memories, where)
-    cases = tuple(_case(c, where, set(refs)) for c in _list(raw["cases"], where))
+    pinned = {m.ref for m in memories if m.pinned and m.status == "active"}
+    cases = tuple(_case(c, where, set(refs), pinned) for c in _list(raw["cases"], where))
     return CaseFile(path.name, memories, cases)
 
 
@@ -283,7 +286,7 @@ def _check_corrections(memories: tuple[FixtureMemory, ...], where: str) -> None:
             raise RetrievalFixtureError(f"{where}: {memory.ref} is superseded by nothing")
 
 
-def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
+def _case(raw: Any, where: str, refs: set[str], pinned_refs: set[str]) -> RetrievalCase:
     _require_mapping(raw, where, CASE_FIELDS,
                      required={"id", "type", "split", "description", "query"})
     here = f"{where}: case {_text(raw['id'], where, 'id')}"
@@ -314,8 +317,13 @@ def _case(raw: Any, where: str, refs: set[str]) -> RetrievalCase:
     expected = raw.get("substantive_match_expected")
     if expected is not None:
         expected = _bool(expected, here, "substantive_match_expected")
-    if lists["must_retrieve"] and expected is False:
-        raise RetrievalFixtureError(f"{here}: must_retrieve with no substantive match expected")
+    unpinned = sorted(set(lists["must_retrieve"]) - pinned_refs)
+    if unpinned and expected is False:
+        # Only a pinned memory is retrieved without being matched (spec E.6/2).
+        raise RetrievalFixtureError(
+            f"{here}: must_retrieve {unpinned} with no substantive match expected; "
+            "only a pinned memory is present without matching"
+        )
     max_rank = raw.get("max_rank", TOP)
     if not isinstance(max_rank, int) or isinstance(max_rank, bool) or max_rank < 1:
         raise RetrievalFixtureError(f"{here}: max_rank must be a positive whole number")
@@ -449,7 +457,7 @@ def run_case(
 
 
 def _support(outcome: RetrievalOutcome, refs: dict[uuid.UUID, str]) -> tuple[str, ...]:
-    """Pinned and lexical results in merged order: what counts as a match."""
+    """Pinned and lexical results in merged order: what was included on purpose."""
     matched = {h.memory_id for r in outcome.results if r.strategy in (PINNED, LEXICAL)
                for h in r.hits}
     return tuple(refs[m.memory_id] for m in outcome.merged if m.memory_id in matched)

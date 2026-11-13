@@ -46,7 +46,13 @@ from apollo.brains.openai_compatible import OpenAICompatibleBrain
 from apollo.context.bundle import BlockType, ContextBlock, ContextBundle, Purpose
 from apollo.context.compiler import RetrievalInput, retrieval_notice
 from apollo.context.estimator import estimator_named
-from apollo.context.rebuild import fixed_text, rebuilt_block, rebuilt_bundle, shown_matches
+from apollo.context.rebuild import (
+    fixed_text,
+    rebuilt_block,
+    rebuilt_bundle,
+    shown_matches,
+    shown_pinned,
+)
 from apollo.context.rules import COMPILER_VERSIONS
 from apollo.errors import ApolloError
 from apollo.memory.models import MANIFEST_SOURCE_KIND, Status
@@ -382,9 +388,16 @@ def _core_authored(
         pinned_count=strategies[PINNED]["result_count"],
         lexical_matches=strategies[LEXICAL]["result_count"],
         recency_count=strategies[RECENCY]["result_count"],
-        substantive_matches=repo.distinct_results(row["turn_id"], (PINNED, LEXICAL)),
+        pinned_or_lexical=repo.distinct_results(row["turn_id"], (PINNED, LEXICAL)),
     )
-    return _Source(retrieval_notice(found, shown=shown_matches(manifest)))
+    # Which of those counts as a match, and how the notice words it, is the
+    # compiler version's: a turn is rebuilt by the rule it was built under.
+    return _Source(retrieval_notice(
+        found,
+        shown=shown_matches(manifest, version),
+        pinned_shown=shown_pinned(manifest),
+        compiler_version=version,
+    ))
 
 
 def _message(uow: UnitOfWork, entry: Mapping[str, Any]) -> _Source | UnavailableSource:

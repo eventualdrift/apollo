@@ -42,6 +42,7 @@ from apollo.context.bundle import (
 from apollo.context.estimator import TokenEstimator
 from apollo.context.rules import (
     COMPILER_V1,
+    COMPILER_V2,
     COMPILER_VERSION,
     COMPILER_VERSIONS,
     CONTEXT_RULES_BY_VERSION,
@@ -79,10 +80,25 @@ NOTICE_NOTHING_MATCHED = (
     "matched — it is not evidence that something did not happen. Say so plainly rather than "
     "reconstructing a plausible recollection."
 )
-NOTICE_MATCHED = (
+#: compiler-v2's wording, when pinned counted as a match. Kept for replay.
+NOTICE_MATCHED_V2 = (
     "The memories above marked match=pinned or match=lexical are what memory holds for this "
     "message. Use them where they bear on it. If they do not answer what was asked, say so "
     "plainly rather than reconstructing a plausible recollection."
+)
+NOTICE_MATCHED = (
+    "The memories above marked match=lexical are what memory holds for this message. Use them "
+    "where they bear on it. If they do not answer what was asked, say so plainly rather than "
+    "reconstructing a plausible recollection."
+)
+#: Nothing matched, and pinned memories are shown (spec E.6/2). The spec's
+#: first sentence, "No stored memory bears on this", would be false here: a
+#: pinned memory may bear on the message without the search having matched it.
+NOTICE_NOTHING_MATCHED_PINNED_SHOWN = (
+    "Nothing in memory was matched to this message. The memories above marked match=pinned "
+    "are present whatever is asked: use one only where it bears on the message. Absence of a "
+    "memory means nothing was recorded or nothing matched — it is not evidence that something "
+    "did not happen. Say so plainly rather than reconstructing a plausible recollection."
 )
 NOTICE_MATCHED_NOT_SHOWN = (
     "Memories matched this message, but none of them fits in this context, so none is shown. "
@@ -136,16 +152,43 @@ class MemoryItem:
     """One retrieved memory, as the compiler needs it (spec F.2, B.4).
 
     `attributes` is the block's provenance header in order: scope, origin,
-    support, confidence, obs, age, match. `pinned` puts it ahead of the ranked
-    ones, and first in line for the memory budget.
+    support, confidence, obs, age. The compiler adds `match` last, since what
+    counts as a match is the compiler version's to say (`match_label`).
+    `pinned` puts it ahead of the ranked ones, and first in line for the
+    memory budget.
     """
 
     memory_id: uuid.UUID
     content: str
     pinned: bool
-    #: Found by pinned or lexical, not merely recent (spec E.3).
-    substantive: bool
+    #: The search matched it to this message, above the floor (spec E.3).
+    matched: bool
     attributes: tuple[tuple[str, str], ...]
+
+
+MATCH_LEXICAL = "lexical"
+MATCH_PINNED = "pinned"
+MATCH_RECENCY = "recency"
+
+
+def match_label(*, pinned: bool, matched: bool, compiler_version: str) -> str:
+    """A memory's `match` attribute: why it is in this context.
+
+    compiler-v2 labelled by the strongest strategy that found it, pinned
+    first. From compiler-v3 a memory the search matched is `lexical` whether
+    or not it is pinned, and `pinned` means present but not matched (spec
+    E.6/2).
+    """
+    if compiler_version == COMPILER_V2:
+        return MATCH_PINNED if pinned else MATCH_LEXICAL if matched else MATCH_RECENCY
+    return MATCH_LEXICAL if matched else MATCH_PINNED if pinned else MATCH_RECENCY
+
+
+def labels_that_match(compiler_version: str) -> frozenset[str]:
+    """The `match` labels this compiler version counted as substantive support."""
+    if compiler_version == COMPILER_V2:
+        return frozenset({MATCH_PINNED, MATCH_LEXICAL})
+    return frozenset({MATCH_LEXICAL})
 
 
 @dataclass(frozen=True)
@@ -153,9 +196,10 @@ class RetrievalInput:
     """What retrieval found for this turn, or that it failed (spec E.3, F.3, L).
 
     `memories` is in final order: pinned first, then by rank. The counts are
-    per strategy; `lexical_matches` counts results above the floor.
-    `substantive_matches` is the number of distinct memories found by pinned
-    or lexical, and is zero exactly when there is no substantive support.
+    facts about the search, per strategy; `lexical_matches` counts results
+    above the floor, and `pinned_or_lexical` the distinct memories those two
+    strategies found between them. Which of them is the number of substantive
+    matches is the compiler version's to say (`substantive_matches`).
     """
 
     memories: tuple[MemoryItem, ...] = ()
@@ -163,12 +207,22 @@ class RetrievalInput:
     pinned_count: int = 0
     lexical_matches: int = 0
     recency_count: int = 0
-    substantive_matches: int = 0
+    pinned_or_lexical: int = 0
     failed: bool = False
 
     @classmethod
     def failure(cls) -> RetrievalInput:
         return cls(failed=True)
+
+    def substantive_matches(self, compiler_version: str) -> int:
+        """How many memories count as support: zero exactly when there is none.
+
+        compiler-v2 counted every pinned memory. From compiler-v3 only what
+        the search matched counts (spec E.6/2).
+        """
+        if compiler_version == COMPILER_V2:
+            return self.pinned_or_lexical
+        return self.lexical_matches
 
 
 @dataclass(frozen=True)
@@ -300,20 +354,25 @@ def _data_region(
     if retrieval.failed:
         return [_notice(BlockType.RETRIEVAL_ERROR, RETRIEVAL_ERROR_NOTICE, version, est)], []
 
-    memories, dropped = _fit_memories(retrieval.memories, req.budget.memory_cap, est)
-    shown = sum(
-        1 for item in retrieval.memories
-        if item.substantive and any(
-            b.source_ref == manifest_source_ref(item.memory_id) for b in memories
-        )
+    memories, dropped = _fit_memories(retrieval.memories, req.budget.memory_cap, est, version)
+    shown_labels = [dict(block.attributes)["match"] for block in memories]
+    text = retrieval_notice(
+        retrieval,
+        shown=sum(label in labels_that_match(version) for label in shown_labels),
+        pinned_shown=shown_labels.count(MATCH_PINNED),
+        compiler_version=version,
     )
-    notice = _notice(
-        BlockType.RETRIEVAL_NOTICE, retrieval_notice(retrieval, shown=shown), version, est
-    )
+    notice = _notice(BlockType.RETRIEVAL_NOTICE, text, version, est)
     return [*memories, notice], dropped
 
 
-def retrieval_notice(retrieval: RetrievalInput, *, shown: int) -> str:
+def retrieval_notice(
+    retrieval: RetrievalInput,
+    *,
+    shown: int,
+    pinned_shown: int = 0,
+    compiler_version: str = COMPILER_VERSION,
+) -> str:
     """The notice body (spec F.3): what was searched, per strategy, and what it means.
 
     The same shape whether or not anything matched, so the block is a fact the
@@ -322,25 +381,38 @@ def retrieval_notice(retrieval: RetrievalInput, *, shown: int) -> str:
     `shown` is how many of the matched memories are in this bundle. Fewer than
     matched means the merge's K or the memory budget left some out, and the
     notice says so: "Apollo had that memory, why didn't he use it" should be
-    answerable from the context itself.
+    answerable from the context itself. `pinned_shown` is how many memories
+    are in the bundle only because they are pinned.
+
+    Each compiler version's wording is kept: compiler-v2 counted a pinned
+    memory as a match, and its bundles hash over the text that said so.
     """
+    v2 = compiler_version == COMPILER_V2
     query = _one_line(retrieval.query_text or "")
     searched = (
         f'Memory searched: "{query}"' if query else "Memory searched: (no words to search with)"
     )
+    # With nothing pinned the line is the spec's own (F.3). With something
+    # pinned, compiler-v3 says what that does and does not mean (E.6/2).
+    pinned = f"pinned({retrieval.pinned_count})"
+    if retrieval.pinned_count and not v2:
+        pinned = pinned[:-1] + ", always present — support only if also matched)"
     strategies = (
-        f"Strategies: pinned({retrieval.pinned_count}), "
+        f"Strategies: {pinned}, "
         f"lexical({retrieval.lexical_matches} above threshold), "
         f"recency({retrieval.recency_count}, fallback only — not support)"
     )
-    matched = retrieval.substantive_matches
+    matched = retrieval.substantive_matches(compiler_version)
     lines = [searched, strategies, f"Substantive matches: {matched}"]
     if matched and shown < matched:
         lines.append(f"Not shown: {matched - shown} matched, but did not fit in this context")
     if not matched:
-        closing = NOTICE_NOTHING_MATCHED
+        closing = (
+            NOTICE_NOTHING_MATCHED_PINNED_SHOWN if pinned_shown and not v2
+            else NOTICE_NOTHING_MATCHED
+        )
     elif shown:
-        closing = NOTICE_MATCHED
+        closing = NOTICE_MATCHED_V2 if v2 else NOTICE_MATCHED
     else:
         closing = NOTICE_MATCHED_NOT_SHOWN
     return "\n".join(lines) + f"\n\n{closing}\n"
@@ -369,7 +441,7 @@ def _notice(
 
 
 def _fit_memories(
-    memories: tuple[MemoryItem, ...], cap: int, estimator: TokenEstimator
+    memories: tuple[MemoryItem, ...], cap: int, estimator: TokenEstimator, compiler_version: str
 ) -> tuple[list[ContextBlock], list[tuple[ContextBlock, str]]]:
     """One block per memory, pinned first then by rank, within the memory cap.
 
@@ -382,7 +454,7 @@ def _fit_memories(
     dropped: list[tuple[ContextBlock, str]] = []
     used = 0
     for _, memory in ordered:
-        block = _memory_block(memory, estimator)
+        block = _memory_block(memory, estimator, compiler_version)
         if used + block.token_estimate > cap:
             dropped.append((block, "budget:memory_cap"))
             continue
@@ -391,8 +463,16 @@ def _fit_memories(
     return kept, dropped
 
 
-def _memory_block(memory: MemoryItem, estimator: TokenEstimator) -> ContextBlock:
-    for key, value in memory.attributes:
+def _memory_block(
+    memory: MemoryItem, estimator: TokenEstimator, compiler_version: str
+) -> ContextBlock:
+    if any(key == "match" for key, _ in memory.attributes):
+        raise CompileInputError("a memory's match attribute is the compiler's to write")
+    label = match_label(
+        pinned=memory.pinned, matched=memory.matched, compiler_version=compiler_version
+    )
+    attributes = (*memory.attributes, ("match", label))
+    for key, value in attributes:
         if not _ATTRIBUTE.fullmatch(key) or not _ATTRIBUTE.fullmatch(value):
             raise CompileInputError(f"memory attribute {key!r} is not a closed word or number")
     ref = manifest_source_ref(memory.memory_id)
@@ -400,9 +480,8 @@ def _memory_block(memory: MemoryItem, estimator: TokenEstimator) -> ContextBlock
                    memory.content, estimator)
     return replace(
         block,
-        attributes=memory.attributes,
-        token_estimate=block.token_estimate
-        + memory_header_tokens(ref, memory.attributes, estimator),
+        attributes=attributes,
+        token_estimate=block.token_estimate + memory_header_tokens(ref, attributes, estimator),
     )
 
 

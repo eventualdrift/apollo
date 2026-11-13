@@ -1,4 +1,4 @@
-"""Merge and the substantive-match rule (spec E.3).
+"""Merge and the substantive-match rule (spec E.3, as clarified by E.6).
 
 - `pinned` bypasses ranking and is always included, ahead of everything else.
 - Every other strategy's scores are normalised to [0, 1] by dividing by that
@@ -10,13 +10,16 @@
 - Each result is then weighted (`lexical` 1.0, `recency` 0.3), deduplicated
   keeping its maximum, and sorted descending. Equal scores are ordered by
   derived confidence, higher first (spec D.8, ADR-0005: confidence "is used as
-  a ranking tiebreaker"), and what is still tied by `memory_id` ascending, so
-  the order is total and deterministic (spec E.3, F.4). The whole list is then
-  truncated to K. Pinned memories are never truncated: "always know this" is a
-  promise, so if there were more than K of them they would all still be
-  included.
-- `substantive_support` is pinned results or lexical results above the floor.
-  Recency never counts and can never suppress the negative signal.
+  a ranking tiebreaker"); then the newer memory first (spec E.6/1), so that of
+  two claims that match equally the current one leads; and what is still tied
+  by `memory_id` ascending, so the order is total and deterministic (spec E.3,
+  F.4). The whole list is then truncated to K. Pinned memories are never
+  truncated: "always know this" is a promise, so if there were more than K of
+  them they would all still be included.
+- `substantive_support` is lexical results above the floor, and nothing else
+  (spec E.6/2). A pinned memory is always present, which is not the same as
+  bearing on what was asked: it is support only when the search also matched
+  it. Recency never counts. Neither can suppress the negative signal.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from apollo.memory.retrieval.base import (
 
 
 def substantive_support(results: tuple[StrategyResult, ...]) -> bool:
-    return any(r.substantive for r in results if r.strategy in (PINNED, LEXICAL))
+    return any(r.substantive for r in results if r.strategy == LEXICAL)
 
 
 def merge(
@@ -66,7 +69,12 @@ def merge(
     ranked = sorted(
         ((score, memory_id, hit) for memory_id, (score, hit) in best.items()
          if memory_id not in pinned),
-        key=lambda item: (-item[0], -item[2].provenance.confidence, item[1]),
+        key=lambda item: (
+            -item[0],
+            -item[2].provenance.confidence,
+            -item[2].provenance.created_at.timestamp(),
+            item[1],
+        ),
     )
     room = max(settings.k - len(always), 0)
     rest = [

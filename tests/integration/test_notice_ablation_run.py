@@ -127,7 +127,7 @@ def test_candidate_run_on_the_real_invocation_path(db, clock, tmp_path, service_
     assert brain.generate_calls == 5
 
     # Personal Apollo, same database, same moment: still the production notice.
-    # That is now compiler-v2's, which states the search it actually ran; the
+    # That is now the current compiler's, which states the search it actually ran; the
     # experiment's baseline and candidate texts are nowhere in it.
     personal_brain = RecordingBrain()
     service = service_factory(brain=personal_brain, config=config)

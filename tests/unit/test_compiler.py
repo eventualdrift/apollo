@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 import uuid
@@ -10,11 +11,14 @@ from datetime import UTC, datetime
 import pytest
 
 from apollo.context.budget import Budget
-from apollo.context.bundle import BlockType, Purpose, Region, TrustTier
+from apollo.context.bundle import BlockType, ContextBundle, Purpose, Region, TrustTier
 from apollo.context.compiler import (
     NO_RETRIEVAL_NOTICE,
     NOTICE_MATCHED,
     NOTICE_MATCHED_NOT_SHOWN,
+    NOTICE_MATCHED_V2,
+    NOTICE_NOTHING_MATCHED,
+    NOTICE_NOTHING_MATCHED_PINNED_SHOWN,
     RETRIEVAL_ERROR_NOTICE,
     CompileInputError,
     CompileRequest,
@@ -27,7 +31,9 @@ from apollo.context.compiler import (
 from apollo.context.estimator import CONSERVATIVE
 from apollo.context.rules import (
     COMPILER_V1,
+    COMPILER_V2,
     COMPILER_VERSION,
+    COMPILER_VERSIONS,
     CONTEXT_RULES_BY_VERSION,
     PROPOSAL_RULES_BY_VERSION,
 )
@@ -344,27 +350,28 @@ def test_empty_history_is_fine() -> None:
     compile_context(make(history=[]))  # must not raise
 
 
-# -- compiler-v2: what retrieval found, stated every turn (spec E.3, F.2, F.3, L) ------
+# -- from compiler-v2: what retrieval found, stated every turn (spec E.3, F.2, F.3, L) --
 
 
 def memory(n: int, content: str = "", *, pinned: bool = False, match: str = "lexical",
            **attributes: str) -> MemoryItem:
+    """`match` is how it was found: `lexical` (the search matched it), `pinned` or `recency`."""
     base = {"scope": "user", "origin": "user_asserted", "support": "asserted",
-            "confidence": "0.70", "obs": "1", "age": "3d", "match": match}
+            "confidence": "0.70", "obs": "1", "age": "3d"}
     base.update(attributes)
     return MemoryItem(
         memory_id=uuid.UUID(int=n), content=content or f"Janu's fact number {n}.",
-        pinned=pinned, substantive=match != "recency", attributes=tuple(base.items()),
+        pinned=pinned or match == "pinned", matched=match == "lexical",
+        attributes=tuple(base.items()),
     )
 
 
 def found(*memories: MemoryItem, query: str = "what do you know?", **counts: int) -> RetrievalInput:
-    substantive = sum(m.substantive for m in memories)
     defaults = {
         "pinned_count": sum(m.pinned for m in memories),
-        "lexical_matches": sum(m.substantive and not m.pinned for m in memories),
-        "recency_count": sum(not m.substantive for m in memories),
-        "substantive_matches": substantive,
+        "lexical_matches": sum(m.matched for m in memories),
+        "recency_count": sum(not m.matched and not m.pinned for m in memories),
+        "pinned_or_lexical": sum(m.matched or m.pinned for m in memories),
     }
     defaults.update(counts)
     return RetrievalInput(memories=memories, query_text=query, **defaults)
@@ -398,7 +405,7 @@ def test_memories_sit_between_the_rules_and_the_notice_as_curated_data() -> None
             )
             assert block.source_kind == "memory"
     assert bundle.max_trust_tier is TrustTier.CURATED and bundle.taint == 0
-    assert bundle.compiler_version == "compiler-v2"
+    assert bundle.compiler_version == "compiler-v3"
 
 
 def test_pinned_memories_lead_whatever_order_they_arrive_in() -> None:
@@ -423,10 +430,20 @@ def test_a_memory_block_carries_its_provenance_and_the_manifest_records_it() -> 
     }
     [entry] = [e for e in bundle.manifest if e["block_type"] == "MEMORY"]
     assert entry["source_ref"] == str(uuid.UUID(int=7)) and entry["included"] is True
-    assert entry["attributes"] == [list(pair) for pair in item.attributes]
+    # The provenance it was given, and the compiler's own `match` last.
+    assert entry["attributes"] == [*(list(pair) for pair in item.attributes),
+                                   ["match", "lexical"]]
     assert claim not in json.dumps(bundle.manifest_list())
     # Only memory blocks carry attributes, so no other entry gains a field.
     assert all("attributes" not in e for e in bundle.manifest if e["block_type"] != "MEMORY")
+
+
+def test_the_match_label_is_the_compilers_to_write() -> None:
+    """What counts as a match is a rule of the compiler version, not a claim a caller makes."""
+    forged = dataclasses.replace(memory(1, match="recency"),
+                                 attributes=(("scope", "user"), ("match", "lexical")))
+    with pytest.raises(CompileInputError, match="the compiler's to write"):
+        compile_context(make(retrieval=found(forged)))
 
 
 def test_a_memory_attribute_that_is_not_a_closed_word_is_refused() -> None:
@@ -465,19 +482,107 @@ def test_absence_is_stated_in_the_specs_own_words() -> None:
 def test_the_notice_is_emitted_when_something_matched_too() -> None:
     """Spec E.3: every turn. A block that appears only on failure reads as an alarm."""
     bundle = compile_context(make(retrieval=found(
-        memory(1, pinned=True, match="pinned"), memory(2), memory(3, match="recency"),
+        memory(1, match="pinned"), memory(2), memory(3, match="recency"),
         query="what is my gym routine",
     )))
     [notice] = [b for b in bundle.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
+    # The pinned memory is present and is not counted: only the search's match is.
     assert notice.content.startswith(
         'Memory searched: "what is my gym routine"\n'
-        "Strategies: pinned(1), lexical(1 above threshold), "
-        "recency(1, fallback only — not support)\n"
-        "Substantive matches: 2\n\n"
+        "Strategies: pinned(1, always present — support only if also matched), "
+        "lexical(1 above threshold), recency(1, fallback only — not support)\n"
+        "Substantive matches: 1\n\n"
     )
-    assert NOTICE_MATCHED in notice.content
+    assert NOTICE_MATCHED in notice.content and "match=pinned" not in NOTICE_MATCHED
     assert "No stored memory bears on this" not in notice.content
     assert "Not shown" not in notice.content
+
+
+# -- a pinned memory is support only when it also matches (spec E.6/2) -----------------
+
+
+def _labels(bundle: ContextBundle) -> list[str]:
+    return [dict(b.attributes)["match"] for b in bundle.blocks
+            if b.block_type is BlockType.MEMORY]
+
+
+def test_a_pinned_memory_does_not_hide_that_nothing_matched() -> None:
+    """Janu, 2026-11-13. Pinned means always present, not that it answers what was asked.
+
+    Under compiler-v2 one pinned memory made every question "substantive", so
+    the notice that nothing matched was never given while anything was pinned.
+    """
+    bundle = compile_context(make(retrieval=found(
+        memory(1, "Janu's name is pronounced YAH-noo.", match="pinned"),
+        memory(2, match="recency"),
+        query="what is the capital of Peru",
+    )))
+    assert _labels(bundle) == ["pinned", "recency"]  # still present, and first
+    [notice] = [b for b in bundle.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
+    assert notice.content == (
+        'Memory searched: "what is the capital of Peru"\n'
+        "Strategies: pinned(1, always present — support only if also matched), "
+        "lexical(0 above threshold), recency(1, fallback only — not support)\n"
+        "Substantive matches: 0\n\n"
+        f"{NOTICE_NOTHING_MATCHED_PINNED_SHOWN}\n"
+    )
+    # A pinned memory may bear on a message the search did not match it to, so
+    # the notice does not say that none does. It still says what absence means.
+    assert "No stored memory bears on this" not in notice.content
+    assert "it is not evidence that something did not happen" in notice.content
+    assert "match=pinned" in notice.content
+
+
+def test_a_pinned_memory_the_search_matched_is_a_match() -> None:
+    bundle = compile_context(make(retrieval=found(
+        memory(1, "Janu's name is pronounced YAH-noo.", pinned=True, match="lexical"),
+        query="how is my name pronounced",
+    )))
+    assert _labels(bundle) == ["lexical"]
+    [notice] = [b for b in bundle.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
+    assert "Substantive matches: 1\n\n" in notice.content
+    assert NOTICE_MATCHED in notice.content
+
+
+def test_a_pinned_memory_that_does_not_fit_is_not_spoken_of_as_shown() -> None:
+    bundle = compile_context(make(retrieval=found(memory(1, "x" * 9000, match="pinned"))))
+    assert _labels(bundle) == []
+    [notice] = [b for b in bundle.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
+    assert NOTICE_NOTHING_MATCHED in notice.content
+    assert NOTICE_NOTHING_MATCHED_PINNED_SHOWN not in notice.content
+
+
+def test_compiler_v2_still_builds_what_it_built() -> None:
+    """Turns were recorded under it, so its rule and its words are kept (spec H.4).
+
+    There, pinned was a match: counted, labelled first, and named in the notice.
+    """
+    retrieval = found(
+        memory(1, "Janu's name is pronounced YAH-noo.", pinned=True, match="lexical"),
+        memory(2, match="pinned"), memory(3), memory(4, match="recency"),
+        query="how is my name pronounced",
+    )
+    v2 = compile_context(make(retrieval=retrieval, compiler_version=COMPILER_V2))
+    assert v2.compiler_version == "compiler-v2"
+    assert _labels(v2) == ["pinned", "pinned", "lexical", "recency"]
+    [notice] = [b for b in v2.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
+    assert notice.content == (
+        'Memory searched: "how is my name pronounced"\n'
+        "Strategies: pinned(2), lexical(2 above threshold), "
+        "recency(1, fallback only — not support)\n"
+        "Substantive matches: 3\n\n"
+        f"{NOTICE_MATCHED_V2}\n"
+    )
+    [rules] = [b for b in v2.blocks if b.block_type is BlockType.CONTEXT_RULES]
+    assert rules.content == CONTEXT_RULES_BY_VERSION["compiler-v2"]
+    assert "match=pinned means Janu pinned it, so it is always present." in rules.content
+
+    v3 = compile_context(make(retrieval=retrieval))
+    assert _labels(v3) == ["lexical", "pinned", "lexical", "recency"]
+    assert v3.bundle_hash != v2.bundle_hash
+    [rules] = [b for b in v3.blocks if b.block_type is BlockType.CONTEXT_RULES]
+    assert "it was not matched to this message, so use it only where it bears" in (
+        rules.content.replace("\n", " "))
 
 
 def test_the_notice_quotes_the_search_on_one_line_and_bounds_it() -> None:
@@ -527,7 +632,8 @@ def test_memories_beyond_the_cap_are_dropped_with_the_reason_recorded() -> None:
                if b.block_type is BlockType.MEMORY) <= Budget(8000, 4000).memory_cap
     # The notice says a matched memory is not shown, rather than leaving a silent gap.
     [notice] = [b for b in bundle.blocks if b.block_type is BlockType.RETRIEVAL_NOTICE]
-    assert "Substantive matches: 4\nNot shown: 1 matched, but did not fit" in notice.content
+    # (The pinned one is present, and is not a match: three were matched.)
+    assert "Substantive matches: 3\nNot shown: 1 matched, but did not fit" in notice.content
 
 
 def test_matches_that_all_failed_to_fit_are_not_described_as_shown() -> None:
@@ -572,12 +678,15 @@ def test_compiler_v1_still_builds_its_own_bundle() -> None:
     ).bundle_hash == bundle.bundle_hash
 
 
-def test_the_two_versions_never_produce_the_same_bundle() -> None:
-    v1 = compile_context(make(compiler_version=COMPILER_V1))
-    v2 = compile_context(make())
-    assert v1.bundle_hash != v2.bundle_hash
-    [rules] = [b for b in v2.blocks if b.block_type is BlockType.CONTEXT_RULES]
-    assert "match=recency means it is \nonly recent".replace("\n", "") in rules.content
+def test_no_two_versions_produce_the_same_bundle() -> None:
+    """Even for a search that found nothing, where v2 and v3 word the notice alike."""
+    hashes = {version: compile_context(make(compiler_version=version)).bundle_hash
+              for version in COMPILER_VERSIONS}
+    assert len(set(hashes.values())) == len(COMPILER_VERSIONS) == 3
+    current = compile_context(make())
+    assert current.bundle_hash == hashes["compiler-v3"]
+    [rules] = [b for b in current.blocks if b.block_type is BlockType.CONTEXT_RULES]
+    assert "match=recency means it is only recent" in rules.content.replace("\n", " ")
 
 
 def test_the_proposal_bundle_asks_for_a_structured_claim() -> None:

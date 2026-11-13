@@ -243,8 +243,47 @@ def test_a_pinned_memory_is_always_present_and_leads(db: Database, service_facto
     assert [(uuid.UUID(e["source_ref"]), dict(e["attributes"])["match"]) for e in manifest] == [
         (pinned, "pinned"), (matched, "lexical"),
     ]
-    assert "Strategies: pinned(1), lexical(1 above threshold)" in _notice(brain.requests[0])
-    assert "Substantive matches: 2" in _notice(brain.requests[0])
+    notice = _notice(brain.requests[0])
+    assert ("Strategies: pinned(1, always present — support only if also matched), "
+            "lexical(1 above threshold)") in notice
+    # One match, not two: the pinned memory is present, and was not matched.
+    assert "Substantive matches: 1\n" in notice
+
+
+def test_a_pinned_memory_does_not_stand_in_for_a_match(
+    db: Database, service_factory, clock
+) -> None:
+    """Spec E.6/2 (Janu, 2026-11-13), end to end.
+
+    With a memory pinned, a question nothing matches used to be told there was
+    support. It is now told nothing matched, with the pinned memory still present.
+    """
+    pinned = _remember(db, clock, "Janu's name is pronounced YAH-noo.", subject="name",
+                       pinned=True)
+    unmatched, brain = _ask(db, service_factory, clock, "What did I score on the networks exam?")
+    [entry] = [e for e in _manifest(db, unmatched.invocation_ids[0])
+               if e["block_type"] == "MEMORY"]
+    assert (uuid.UUID(entry["source_ref"]), dict(entry["attributes"])["match"]) == (
+        pinned, "pinned")
+    notice = _notice(brain.requests[0])
+    assert "Substantive matches: 0\n" in notice
+    assert "Nothing in memory was matched to this message." in notice
+    assert "it is not evidence that something did not happen" in notice
+    recorded = {row["strategy"]: (row["result_count"], row["substantive"]) for row in _rows(
+        db, "SELECT strategy, result_count, substantive FROM turn_retrieval WHERE turn_id = %s",
+        unmatched.turn_id)}
+    assert recorded["pinned"] == (1, False) and recorded["lexical"] == (0, False)
+
+    # Asked about directly, the same memory is a match, and says so.
+    matched, brain = _ask(db, service_factory, clock, "How is my name pronounced?")
+    [entry] = [e for e in _manifest(db, matched.invocation_ids[0])
+               if e["block_type"] == "MEMORY"]
+    assert dict(entry["attributes"])["match"] == "lexical"
+    assert "Substantive matches: 1\n" in _notice(brain.requests[0])
+    recorded = {row["strategy"]: (row["result_count"], row["substantive"]) for row in _rows(
+        db, "SELECT strategy, result_count, substantive FROM turn_retrieval WHERE turn_id = %s",
+        matched.turn_id)}
+    assert recorded["pinned"] == (1, False) and recorded["lexical"] == (1, True)
 
 
 def test_provenance_in_the_header_is_derived_from_the_observations(

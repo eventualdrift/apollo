@@ -128,7 +128,7 @@ def test_remember_that_produces_one_pending_proposal_from_a_second_invocation(
     for row in invocations:
         assert row["context_bundle_hash"] and row["rendered_prompt_hash"]
         assert (row["adapter_key"], row["render_version"], row["compiler_version"]) == (
-            "fake", "chat-v3", "compiler-v2",
+            "fake", "chat-v3", "compiler-v3",
         )
     assert result.invocation_ids == (reply["id"], structuring["id"])
 

@@ -81,7 +81,7 @@ def test_replay_reports_both_statuses_for_each_model_call(apollo) -> None:
     assert (status, err) == (0, "")
     assert out.count("bundle: VERIFIED") == 2 and out.count("render: VERIFIED") == 2
     assert "1  reply (completed)" in out and "2  memory_proposal (completed)" in out
-    assert "built by compiler-v2, rendered by fake/chat-v3" in out
+    assert "built by compiler-v3, rendered by fake/chat-v3" in out
     # Statuses and ids only. The conversation's text is not printed unasked.
     assert SECRET not in out
 

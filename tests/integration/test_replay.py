@@ -32,7 +32,7 @@ from apollo.brains.registry import BrainRegistry
 from apollo.config import SURFACE_EVAL
 from apollo.context.bundle import BlockType
 from apollo.context.compiler import compile_context
-from apollo.context.rules import COMPILER_V1
+from apollo.context.rules import COMPILER_V1, COMPILER_V2
 from apollo.core import memories, replay
 from apollo.core import retrieval as core_retrieval
 from apollo.core import turns as core_turns
@@ -92,7 +92,7 @@ def test_a_completed_turn_replays_verified_and_rebuilds_exactly_what_was_sent(
     assert found.unavailable == () and found.detail is None
     assert (found.purpose, found.invocation_status, found.seq) == ("reply", "completed", 1)
     assert (found.compiler_version, found.adapter_key, found.render_version) == (
-        "compiler-v2", "fake", "chat-v3",
+        "compiler-v3", "fake", "chat-v3",
     )
     # Byte for byte what the brain was handed, rebuilt from rows alone.
     assert found.request is not None and found.bundle is not None
@@ -407,6 +407,55 @@ def test_a_turn_built_by_the_first_compiler_replays_with_its_texts(
     assert _statuses(found) == VERIFIED
     assert found.request.messages == brain.requests[0].messages
     assert "not yet available in this build" in found.request.messages[-1].content
+
+
+def test_a_turn_with_pinned_memories_replays_by_the_rule_it_was_built_under(
+    db: Database, service_factory, clock, monkeypatch
+) -> None:
+    """Spec E.6/2 changed what a pinned memory counts as, and so what the notice says.
+
+    A turn recorded before the change (compiler-v2) counted its pinned memory
+    as a match and said so. It must still replay as it was sent. Nothing in
+    the record is reinterpreted by the new rule.
+    """
+    _remember(db, clock, "Janu's name is pronounced YAH-noo.", subject="name", pinned=True)
+    _remember(db, clock, "Janu's bicycle is a blue Trek.", subject="bicycle")
+    conversation = create_conversation(db, now=clock())
+
+    monkeypatch.setattr(
+        core_turns, "compile_context",
+        lambda request: compile_context(
+            dataclasses.replace(request, compiler_version=COMPILER_V2)),
+    )
+    old_brain = RecordingBrain()
+    old, _ = _ask(db, service_factory, clock, "What did I score on the networks exam?",
+                  conversation=conversation, brain=old_brain)
+    monkeypatch.undo()
+    new_brain = RecordingBrain()
+    new, _ = _ask(db, service_factory, clock, "And what did I score on the databases exam?",
+                  conversation=conversation, brain=new_brain)
+    asked, _ = _ask(db, service_factory, clock, "How is my name pronounced?",
+                    conversation=conversation)
+
+    old_replay, new_replay, asked_replay = (_only(db, t.turn_id) for t in (old, new, asked))
+    assert [r.compiler_version for r in (old_replay, new_replay, asked_replay)] == [
+        "compiler-v2", "compiler-v3", "compiler-v3"]
+    for found in (old_replay, new_replay, asked_replay):
+        assert _statuses(found) == VERIFIED
+
+    # The same memory store and the same kind of question, told two ways.
+    sent_then = old_replay.request.messages[-1].content
+    sent_now = new_replay.request.messages[-1].content
+    assert sent_then == old_brain.requests[0].messages[-1].content
+    assert sent_now == new_brain.requests[0].messages[-1].content
+    assert "Strategies: pinned(1), lexical(0 above threshold)" in sent_then
+    assert "Substantive matches: 1" in sent_then            # pinned was a match then
+    assert "Substantive matches: 0" in sent_now             # and is not one now
+    assert "Nothing in memory was matched to this message." in sent_now
+    assert "match=pinned>>>" in sent_then and "match=pinned>>>" in sent_now
+    # Asked about directly, the pinned memory is a match under the new rule too.
+    assert "match=lexical>>>" in asked_replay.request.messages[-1].content
+    assert "Substantive matches: 1" in asked_replay.request.messages[-1].content
 
 
 def test_a_retired_render_version_is_reported_and_never_compared(

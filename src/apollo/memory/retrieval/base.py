@@ -137,7 +137,8 @@ class StrategyResult:
     strategy: str
     query_text: str | None
     hits: tuple[Hit, ...]
-    #: Did this strategy contribute substantive support? Never for recency.
+    #: Did this strategy contribute substantive support? Only lexical can
+    #: (spec E.6/2): never recency, and never pinned by being pinned.
     substantive: bool
     duration_ms: int
 
@@ -156,19 +157,24 @@ class Retrieved:
 
     @property
     def match(self) -> str:
-        """The strongest way it was found: pinned, else lexical, else recency."""
-        return next(s for s in STRATEGIES if s in self.strategies)
+        """Why it is here: it matched this message, else it is pinned, else merely recent.
+
+        A pinned memory the search also matched is a match (spec E.6/2);
+        `pinned` still says it is pinned.
+        """
+        return next(s for s in (LEXICAL, PINNED, RECENCY) if s in self.strategies)
 
     @property
     def substantive(self) -> bool:
-        return self.match != RECENCY
+        return LEXICAL in self.strategies
 
 
 @dataclass(frozen=True)
 class RetrievalOutcome:
     results: tuple[StrategyResult, ...]
     merged: tuple[Retrieved, ...]
-    #: Spec E.3: pinned results, or lexical results above the floor. Never recency.
+    #: Spec E.3 with E.6/2: lexical results above the floor. Never recency, and
+    #: a pinned memory only when it is also one of those.
     substantive_support: bool
 
     def result(self, strategy: str) -> StrategyResult:

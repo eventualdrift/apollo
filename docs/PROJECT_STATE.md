@@ -10,6 +10,60 @@ the governing documents; it does not replace the frozen specification or accepte
 - Accepted decisions: [`adr/`](adr/)
 - Implementation sequence: [`architecture/implementation-plan.md`](architecture/implementation-plan.md)
 
+## Update (2026-11-13): Janu's decisions on the open questions; the two retrieval rules are built
+
+The entries below are unchanged. PR #30 (the acceptance record) is merged, and Codex reviewed it
+with no findings: its usage limit has lifted. #27, #28 and #29 were self-reviewed only.
+
+**Janu's answers (2026-11-13), in his order.** The spec records the ones that govern behaviour
+in §E.6 and §P.4.
+1. **Where the model runs:** on his desktop, the machine with the RTX 5070 Ti, which he calls the
+   root server. He will mostly work from his MacBook, connected to it. Access from his iPhone
+   comes later. He also intends to map all his connected devices with Apollo, later.
+2. **The first accepted model** (Gate 2): follow Claude's recommendation. A complete run on a
+   real model; every manual case read by Janu; every deterministic failure fixed or waived; and
+   a dated note from Janu naming that run the first baseline. **Not yet built.**
+3. **Both retrieval questions: yes.** Built in this change (below).
+4. **The 25 retrieval cases:** accepted.
+5. **Interface:** the command line for now. He wants a web interface or an app eventually, and
+   Apollo woven into everything he does. Once a model works, he wants the GitHub repository
+   cleaned up, possibly moved to a new branch or repository for privacy, and much deeper
+   security and privacy work, because he will tell Apollo a great deal about himself.
+   **None of that is started; it is after the gates.**
+6. **The two readings:** confirmed. A proposal a forget declines is `ignored` with reason
+   `memory_tombstoned`; a context too large to send is recorded as one failed invocation row.
+7. **The Apollo VM:** authorised.
+
+**Built in this change (spec §E.6):**
+- **Of two equal matches, the newer memory leads.** The merge now orders by score, then
+  confidence, then newer first, then `memory_id`. `rec_001` and `rec_002` pass.
+- **A pinned memory is support only when the search also matched it.** It is still always
+  present and first. `Substantive matches` counts lexical matches only, and a memory's `match`
+  label is `lexical` when the search matched it, pinned or not.
+- **This is `compiler-v3`.** The same state now compiles to a different context, so the version
+  changed (§F.4). `compiler-v2` is kept, byte for byte, and a turn recorded under it still
+  replays `VERIFIED`: a test builds one with a pinned memory and replays it beside new turns.
+- **The retrieval suite:** all 25 cases pass under `english` (23 before). `pin_002` now expects
+  the pinned memory to be present and no support. The baseline and the sweep were regenerated;
+  the sweep still selects `english` at floor 0.0.
+
+**Wording that is Claude's, following from Janu's second retrieval decision** (recorded in
+§E.6 so it is not a silent change):
+- With a memory pinned, the notice's `Strategies` line says
+  `pinned(N, always present — support only if also matched)`.
+- When nothing matched and a pinned memory is shown, the notice does not say "No stored memory
+  bears on this", since a pinned memory may. It says nothing was matched, and keeps the spec's
+  sentences on what absence means.
+- With nothing pinned, the notice is the spec's §F.3 text, unchanged.
+
+**Not yet proven:** how a real model behaves with any of this. `compiler-v3` has never been sent
+to one, and neither had `compiler-v2`.
+
+**Remaining work, in order:**
+1. the first-baseline policy in Gate 2 (decision 2);
+2. the runbook for the model runs on Janu's desktop, which this cloud session cannot reach;
+3. then, on his machine: acceptance steps 1 to 7, and the product trial.
+
 ## Update (2026-11-13): the acceptance record — step 16. The technical gate has not passed
 
 The entries below are unchanged. PR #29 (backup and restore) is merged. It had no Codex review;

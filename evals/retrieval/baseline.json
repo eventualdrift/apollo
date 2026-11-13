@@ -1,6 +1,6 @@
 {
   "note": "The retrieval suite at the RetrievalSettings() defaults, run once per text-search configuration (spec E.4), over the corpus whose digest is corpus_sha256. CI fails if the corpus changes, if any metric of either configuration gets worse, if a case that passes here starts failing, or if a known-failing case fails in any way not listed under its `failures`. Regenerate deliberately, with the reason in the commit.",
-  "corpus_sha256": "55437bb95cf90b7661e38bb88261fe1e72cc765bf842ee300ca96c9883fab58a",
+  "corpus_sha256": "c25bfcb1a6273232f1501957f5d0a7861bf5634f7feacec0d577d66ced179497",
   "lexical_floor": 0.0,
   "default_text_search_config": "english",
   "configs": {
@@ -8,35 +8,22 @@
       "splits": {
         "tune": {
           "cases": 13,
-          "passed": 12,
+          "passed": 13,
           "recall@5": 1.0,
           "precision@5": 1.0,
-          "mean_rank_of_expected": 1.6364,
+          "mean_rank_of_expected": 1.7273,
           "correct_empty_rate": 1.0
         },
         "holdout": {
           "cases": 12,
-          "passed": 11,
+          "passed": 12,
           "recall@5": 1.0,
           "precision@5": 1.0,
-          "mean_rank_of_expected": 1.3333,
+          "mean_rank_of_expected": 1.1111,
           "correct_empty_rate": 1.0
         }
       },
-      "known_failures": {
-        "rec_001": {
-          "failures": [
-            "gym_new at rank 2 > 1"
-          ],
-          "reason": "The spec E.3 merge keeps each memory's maximum score, so recency cannot lift the newer of two equal lexical matches; ties go to the older memory_id. A spec question, put to Janu."
-        },
-        "rec_002": {
-          "failures": [
-            "gym_new at rank 2 > 1"
-          ],
-          "reason": "As rec_001."
-        }
-      }
+      "known_failures": {}
     },
     "simple": {
       "splits": {
@@ -45,15 +32,15 @@
           "passed": 7,
           "recall@5": 0.875,
           "precision@5": 0.5636,
-          "mean_rank_of_expected": 1.8,
+          "mean_rank_of_expected": 1.9,
           "correct_empty_rate": 0.0
         },
         "holdout": {
           "cases": 12,
-          "passed": 4,
+          "passed": 5,
           "recall@5": 0.875,
           "precision@5": 0.4091,
-          "mean_rank_of_expected": 2.125,
+          "mean_rank_of_expected": 1.625,
           "correct_empty_rate": 0.0
         }
       },
@@ -64,12 +51,6 @@
             "substantive_support False, expected True"
           ],
           "reason": "`simple` neither stems nor drops stop words: words like 'my' and 'what' match unrelated memories, and inflected forms miss. Measured for the spec E.4 comparison, not a defect."
-        },
-        "comm_004": {
-          "failures": [
-            "disagree at rank 3 > 2"
-          ],
-          "reason": "As comm_002."
         },
         "comm_005": {
           "failures": [
@@ -82,18 +63,6 @@
             "substantive_support True, expected False"
           ],
           "reason": "As comm_002."
-        },
-        "rec_001": {
-          "failures": [
-            "gym_new at rank 2 > 1"
-          ],
-          "reason": "The spec E.3 merge keeps each memory's maximum score, so recency cannot lift the newer of two equal lexical matches; ties go to the older memory_id. A spec question, put to Janu."
-        },
-        "rec_002": {
-          "failures": [
-            "gym_new at rank 2 > 1"
-          ],
-          "reason": "As rec_001."
         },
         "amb_001": {
           "failures": [
@@ -114,15 +83,9 @@
           ],
           "reason": "As comm_002."
         },
-        "fact_003": {
-          "failures": [
-            "sister at rank 2 > 1"
-          ],
-          "reason": "As comm_002."
-        },
         "corr_002": {
           "failures": [
-            "exam_new at rank 5 > 1"
+            "exam_new at rank 2 > 1"
           ],
           "reason": "As comm_002."
         },
@@ -131,6 +94,18 @@
             "substantive_support True, expected False"
           ],
           "reason": "As comm_002."
+        },
+        "multi_001": {
+          "failures": [
+            "laptop at rank 3 > 2"
+          ],
+          "reason": "As comm_002: an unrelated memory matches on stop words and ties with `laptop`; it is the newer of the two, so since spec E.6/1 it leads."
+        },
+        "multi_002": {
+          "failures": [
+            "laptop at rank 3 > 2"
+          ],
+          "reason": "As comm_002: an unrelated memory matches on stop words and ties with `laptop`; it is the newer of the two, so since spec E.6/1 it leads."
         },
         "noresult_001": {
           "failures": [
@@ -143,6 +118,12 @@
             "substantive_support True, expected False"
           ],
           "reason": "As comm_002."
+        },
+        "pin_002": {
+          "failures": [
+            "substantive_support True, expected False"
+          ],
+          "reason": "As comm_002: the pinned memory matches the question on stop words, so it is counted as support (spec E.6/2)."
         }
       }
     }
